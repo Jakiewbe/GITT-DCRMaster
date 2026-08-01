@@ -10,14 +10,13 @@
 export const CF1_PRESETS = {
   name: 'Carbon Fluoride (CF1 / 氟化碳)',
   molarMass: 31.01,       // g/mol
-  density: 2.7,           // g/cm3
-  molarVolume: 11.48,     // cm3/mol
+  density: 2.25,          // g/cm3 (user-provided CF1 value, 2026-07-17)
+  molarVolume: 31.01 / 2.25, // cm3/mol
   specificCapacity: 865   // mAh/g
 };
 
 const CURRENT_EPS = 1e-12;
 const CAPACITY_EPS = 1e-12;
-const DEFAULT_GITT_FACTOR = 4 / Math.PI;
 const DEFAULT_SHORT_TIME_FRACTION = 0.2;
 const DEFAULT_MIN_FIT_POINTS = 4;
 const CURRENT_LEVEL_RELATIVE_GAP = 0.15;
@@ -580,8 +579,7 @@ export const solveGitt = (steps, params, options = {}) => {
     gittModel = 'planar',
     gittMethod = 'regression',
     gittFitDelay = 1,
-    gittMultiplier = '4/pi',
-    characteristicLengthMode = 'dense'
+    gittMultiplier = '4/pi'
   } = options;
 
   const characteristicLengthCm = getCharacteristicDiffusionLengthCm(params, gittModel, options);

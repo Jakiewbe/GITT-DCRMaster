@@ -1,0 +1,289 @@
+{
+  "oraclePackVersion": "1.1.0",
+  "inputs": {
+    "hash": {
+      "jcs": {
+        "decomposedText": "é",
+        "bigintDecimal": "9007199254740993"
+      },
+      "sourceRows": [
+        {
+          "sourceFileHash": "898b61e30127de6a48f8ffbb3e7bfcbdaa69ad75454f32be7790c1dc37d056cc",
+          "channelId": "6",
+          "sourceStream": "ndax:data.ndc:main",
+          "sourceSheet": null,
+          "sourceRowIndex": "2163",
+          "sourceRecordSequence": "2163"
+        },
+        {
+          "sourceFileHash": "898b61e30127de6a48f8ffbb3e7bfcbdaa69ad75454f32be7790c1dc37d056cc",
+          "channelId": "6",
+          "sourceStream": "ndax:data.ndc:main",
+          "sourceSheet": null,
+          "sourceRowIndex": "2164",
+          "sourceRecordSequence": "2164"
+        }
+      ],
+      "canonicalRows": [
+        {
+          "sourceIndex": 0,
+          "scientific": {
+            "analysisStepId": "rest-1",
+            "canonicalStepType": "rest",
+            "chargeCapacityAh": null,
+            "currentA": 0,
+            "dischargeCapacityAh": null,
+            "elapsedTimeTicks": "2",
+            "netCapacityAh": null,
+            "recordSequence": "2",
+            "stepElapsedTimeTicks": "2",
+            "temperatureC": null,
+            "timeResolutionNs": "1000000000",
+            "vendorStepId": "1",
+            "vendorStepType": "Rest",
+            "voltageV": 3.125
+          }
+        },
+        {
+          "sourceIndex": 1,
+          "scientific": {
+            "analysisStepId": "pulse-1",
+            "canonicalStepType": "discharge",
+            "chargeCapacityAh": null,
+            "currentA": -0.25,
+            "dischargeCapacityAh": null,
+            "elapsedTimeTicks": "1000",
+            "netCapacityAh": null,
+            "recordSequence": "1",
+            "stepElapsedTimeTicks": "0",
+            "temperatureC": null,
+            "timeResolutionNs": "1000000",
+            "vendorStepId": "2",
+            "vendorStepType": "CC_DChg",
+            "voltageV": 3
+          }
+        }
+      ]
+    },
+    "gitt": {
+      "activeMaterialEquivalentThicknessCm": 0.0005,
+      "activeMassG": 0.00039269908169872416,
+      "electrodeDiameterCm": 1,
+      "pulseDurationS": 100,
+      "deltaEsV": 0.02,
+      "voltageNoiseFloorV": 1e-7,
+      "fitWindowS": [1, 25],
+      "pulseCurrentA": 1e-6,
+      "qrefAh": 1,
+      "preRestPotentialV": 3,
+      "postRestPotentialV": 3.02,
+      "restTimesS": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+      "pulsePoints": [
+        { "timeS": 0, "voltageV": 3.005 },
+        { "timeS": 1, "voltageV": 3.016283791670955 },
+        { "timeS": 4, "voltageV": 3.02756758334191 },
+        { "timeS": 9, "voltageV": 3.038851375012865 },
+        { "timeS": 16, "voltageV": 3.0501351666838203 },
+        { "timeS": 25, "voltageV": 3.0614189583547753 },
+        { "timeS": 36, "voltageV": 3.0727027500257306 },
+        { "timeS": 49, "voltageV": 3.0839865416966857 },
+        { "timeS": 64, "voltageV": 3.095270333367641 },
+        { "timeS": 81, "voltageV": 3.106554125038596 },
+        { "timeS": 100, "voltageV": 3.117837916709551 }
+      ]
+    },
+    "dcr": {
+      "transitionTimeNs": "10800000000000",
+      "baseline": {
+        "voltageV": 2.903114080429077,
+        "currentA": 0
+      },
+      "restOffsetsNs": [
+        "-60000000000",
+        "-45000000000",
+        "-30000000000",
+        "-15000000000",
+        "0"
+      ],
+      "pulsePoints": [
+        {
+          "offsetNs": "0",
+          "voltageV": 2.8476722240448,
+          "currentA": -0.0009826194727793336
+        },
+        {
+          "offsetNs": "5000000000",
+          "voltageV": 2.4108529090881348,
+          "currentA": -0.0009827199392020702
+        },
+        {
+          "offsetNs": "10000000000",
+          "voltageV": 2.2815158367156982,
+          "currentA": -0.0009827192407101393
+        },
+        {
+          "offsetNs": "30000000000",
+          "voltageV": 2.2710061073303223,
+          "currentA": -0.0009827206376940012
+        }
+      ],
+      "requests": [
+        { "kind": "first_sample", "label": "DCR_first_sample" },
+        { "kind": "exact_time", "label": "DCR_1s", "offsetNs": "1000000000" },
+        { "kind": "exact_time", "label": "DCR_5s", "offsetNs": "5000000000" },
+        { "kind": "exact_time", "label": "DCR_10s", "offsetNs": "10000000000" },
+        { "kind": "exact_time", "label": "DCR_30s", "offsetNs": "30000000000" }
+      ]
+    },
+    "soc": {
+      "socBasis": {
+        "qrefAh": 2,
+        "initialSocPct": 50
+      },
+      "rows": [
+        {
+          "rowId": "soc-1",
+          "elapsedNs": "0",
+          "stepElapsedNs": "0",
+          "recordSequence": "1",
+          "currentA": 0,
+          "analysisStepId": "charge-1",
+          "stepType": "charge"
+        },
+        {
+          "rowId": "soc-2",
+          "elapsedNs": "10000000000",
+          "stepElapsedNs": "10000000000",
+          "recordSequence": "2",
+          "currentA": 2,
+          "analysisStepId": "charge-1",
+          "stepType": "charge"
+        },
+        {
+          "rowId": "soc-3",
+          "elapsedNs": "10000000000",
+          "stepElapsedNs": "0",
+          "recordSequence": "3",
+          "currentA": -1,
+          "analysisStepId": "discharge-1",
+          "stepType": "discharge"
+        },
+        {
+          "rowId": "soc-4",
+          "elapsedNs": "10000000000",
+          "stepElapsedNs": "0",
+          "recordSequence": "4",
+          "currentA": -9,
+          "analysisStepId": "discharge-1",
+          "stepType": "discharge"
+        },
+        {
+          "rowId": "soc-5",
+          "elapsedNs": "20000000000",
+          "stepElapsedNs": "10000000000",
+          "recordSequence": "5",
+          "currentA": -1,
+          "analysisStepId": "discharge-1",
+          "stepType": "discharge"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "oraclePackVersion": "1.1.0",
+    "hash": {
+      "canonical": "{\"a\":[3,null,\"\u00e9\"],\"b\":0,\"big\":\"9007199254740993\",\"nested\":{\"\u4f2a\":true}}",
+      "sha256": "f20f730482aa27a43a2520a2ac7dea4a1295be17ff40fb0ec8fc45d215e782a6",
+      "rowIds": [
+        "6fccc2fa9a22d67bacd0b7d0c59c9c4b33dd04fd04286e014d9e1e0e16f4c43d",
+        "84c8522f2f02b28c4605673fe71fef05820bcfb199e8f80782e667491253a65e"
+      ],
+      "canonicalDatasetHash": "115cf84b52fc5786a494cf8976184b7f5a22c73d8d3f4da0ddd8bb7d10c84a6d"
+    },
+    "gitt": {
+      "fitPointCount": 5,
+      "slopeVPerSqrtS": 0.01128379167095508,
+      "interceptV": 3.0050000000000003,
+      "rSquared": 1,
+      "metricValueCm2PerS": 1.2345679012345694e-10,
+      "predictedDeltaEAtTauV": 0.11283791670955079,
+      "observedDeltaEAtTauV": 0.10155412503859607,
+      "endpointConsistencyRelativeError": 0.09999999999999686,
+      "dimensionlessPulseTime": 0.049382716049382776,
+      "dimensionlessFitTime": 0.012345679012345694
+    },
+    "dcr": {
+      "DCR_first_sample": {
+        "calculationState": "computed",
+        "actualOffsetNs": "0",
+        "deltaVoltageV": -0.055441856384277344,
+        "deltaCurrentA": -0.0009826194727793336,
+        "resistanceOhm": 56.42250934378531
+      },
+      "DCR_1s": {
+        "calculationState": "not_computable",
+        "resistanceOhm": null
+      },
+      "DCR_5s": {
+        "calculationState": "computed",
+        "actualOffsetNs": "5000000000",
+        "deltaVoltageV": -0.4922611713409424,
+        "deltaCurrentA": -0.0009827199392020702,
+        "resistanceOhm": 500.9170483918735
+      },
+      "DCR_10s": {
+        "calculationState": "computed",
+        "actualOffsetNs": "10000000000",
+        "deltaVoltageV": -0.6215982437133789,
+        "deltaCurrentA": -0.0009827192407101393,
+        "resistanceOhm": 632.5288220307922
+      },
+      "DCR_30s": {
+        "calculationState": "computed",
+        "actualOffsetNs": "30000000000",
+        "deltaVoltageV": -0.6321079730987549,
+        "deltaCurrentA": -0.0009827206376940012,
+        "resistanceOhm": 643.2224468003695
+      }
+    },
+    "soc": {
+      "incrementsAh": [
+        0,
+        0.002777777777777778,
+        0,
+        0,
+        -0.013888888888888888
+      ],
+      "cumulativeNetCapacityAh": [
+        0,
+        0.002777777777777778,
+        0.002777777777777778,
+        0.002777777777777778,
+        -0.01111111111111111
+      ],
+      "totalNetCapacityAh": -0.01111111111111111,
+      "diagnosticCandidateNetCapacityAh": -0.01111111111111111,
+      "totalThroughputAh": 0.016666666666666666,
+      "skippedBoundaryCount": 1,
+      "boundaryGapCount": 0,
+      "duplicateTickCount": 1,
+      "integratedDurationS": 20,
+      "expectedActivityDurationS": 20,
+      "activityTimeCoverageFraction": 1,
+      "socPct": [
+        50,
+        50.138888888888886,
+        50.138888888888886,
+        50.138888888888886,
+        49.44444444444444
+      ],
+      "dodPct": [
+        50,
+        49.861111111111114,
+        49.861111111111114,
+        49.861111111111114,
+        50.55555555555556
+      ]
+    }
+  }
+}

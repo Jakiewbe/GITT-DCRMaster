@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PulseLab GITT DCR",
+  "version": "0.1.0-beta.1",
+  "identifier": "com.jakiewbe.gittdcr.workbench",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "PulseLab — GITT / DCR 科学工作台",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1024,
+        "minHeight": 700,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../docs/RELEASE_NOTES_0.1.0-beta.1.md": "RELEASE_NOTES_0.1.0-beta.1.md"
+    },
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "category": "Education",
+    "shortDescription": "Auditable GITT and DCR analysis",
+    "longDescription": "Offline scientific analysis for Neware GITT and DCR pulse data with explicit QC and model applicability reporting.",
+    "windows": {
+      "wix": {
+        "version": "0.1.0.3",
+        "upgradeCode": "7d3e4dcf-7648-512d-84c9-cff5f8987383"
+      }
+    }
+  }
+}
