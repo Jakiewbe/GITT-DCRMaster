@@ -1,6 +1,6 @@
 import type { AnalysisVersionsV1 } from './contracts';
 
-export const SCIENTIFIC_CONTRACT_VERSION = '1.3.0';
+export const SCIENTIFIC_CONTRACT_VERSION = '1.5.0';
 export const CANONICAL_SCHEMA_VERSION = '1.0.0';
 export const SOC_CONTRACT_VERSION = '1.0.0';
 export const STEP_SEGMENTATION_VERSION = '1.0.0';
@@ -10,13 +10,18 @@ export const ORACLE_PACK_VERSION = '1.1.0-beta.1';
 
 export const GITT_ALGORITHM = {
   id: 'WH_PLANAR_MANUAL_ENDPOINT',
-  version: '1.0.0',
-  qcPolicyId: 'GITT_QC_POLICY_CFX_1_0_0',
+  version: '1.1.0',
+  qcPolicyId: 'GITT_QC_POLICY_CFX_1_1_0',
+} as const;
+
+export const GITT_AUXILIARY_FIT = {
+  id: 'REGRESSION_WINDOW_VALIDATION_E_SQRT_T',
+  version: '1.1.0',
 } as const;
 
 export const DCR_ALGORITHM = {
-  id: 'DCR_REST_TO_PULSE_EXACT_TICK',
-  version: '1.1.0',
+  id: 'DCR_TWO_CURRENT_TERMINAL_V1',
+  version: '1.0.0',
   qcPolicyId: 'DCR_QC_POLICY_1_0_0',
 } as const;
 

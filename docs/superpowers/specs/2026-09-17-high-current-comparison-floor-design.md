@@ -2,7 +2,7 @@
 
 ## 目标
 
-对比电流大于或等于 500 mA·g⁻¹ 的 CFₓ GITT 数据，保留真实实验协议的 1.5 V 终端截止判据；同时在主 `D_app–Voltage` 比较图中设置 `medianVoltageV >= 1.5 V` 的显示/比较下限。中值电压低于 1.5 V 的结果不删除，只从主比较图中排除，并保留在 GITT Summary、audit、pulse detail 和正式导出中。
+对比电流大于或等于 500 mA·g⁻¹ 的 CFₓ GITT 数据，保留真实实验协议的 1.5 V 终端截止判据；同时在主 `D_app–Voltage` 比较图中设置 `medianVoltageV >= 1.5 V` 的显示/比较下限。中值电压低于 1.5 V 的结果不删除，只从主比较图中排除，并保留在 GITT Summary、audit、pulse detail 和正式导出中。协议截止后的脉冲若 4 h 静置完成且中值电压仍不低于 1.5 V，也可按高倍率主图规则进入比较。
 
 比电流低于 500 mA·g⁻¹ 的数据继续使用现有主图和协议资格规则。
 
@@ -38,7 +38,7 @@ medianVoltageV >= 1.5 V
 
 - 协议截止前且通过现有科学 QC 的标准 pulse：进入主比较图和导出。
 - 协议截止前但 `medianVoltageV < 1.5 V` 的高倍率 pulse：保留数值和状态，但不进入主 `D_app–Voltage` 图。
-- 协议截止后的 pulse：不进入标准完整 GITT 主序列；如果已有科学结果，则保留在 GITT Summary、audit、pulse detail 和正式导出，并明确标记为 `post_protocol_cutoff`。其已有数值结果可以审计导出，但不获得标准协议的主比较资格。
+- 协议截止后的 pulse：不伪装成标准完整 GITT 主序列，但如果 4 h 静置完成、结果可计算且中值电压仍不低于 1.5 V，可获得高倍率主图资格；仍明确标记为 `post_protocol_cutoff`。其协议状态和主图资格分别记录。
 - 低于 500 mA·g⁻¹：不启用中值电压下限，保持旧规则。
 - 任何缺失中值电压、缺失 Rest、缺失 loaded t=0 或不可计算结果都不能静默降级为合格主图点。
 
@@ -65,6 +65,7 @@ medianVoltageV >= 1.5 V
 - 比电流为 499.999 mA·g⁻¹时，`medianVoltageV < 1.5 V` 的点仍按旧规则处理。
 - 比电流为 500 mA·g⁻¹且 `medianVoltageV = 1.5 V` 时，点可以进入主比较图。
 - 比电流为 500 mA·g⁻¹且 `medianVoltageV = 1.499 V` 时，点保留在 Summary/audit/detail/export，但不进入主比较图。
+- 协议截止后的 pulse 在 4 h 静置完成且 `medianVoltageV >= 1.5 V` 时，可进入高倍率主比较图；低于 1.5 V 时只保留审计。
 - 真实原始轨迹第一次到达 Stop_Volt 的协议截止判断保持不变。
 - 协议截止后的记录不会被伪装成标准完整 GITT 点，但可在审计和导出中追溯。
 - 共同 pulse 的 Endpoint、ΔEt、ΔEs、D、DCR、CFx_10s 和其他冻结字段数值不变。

@@ -39,7 +39,10 @@ export type BatchTrendPlotProps = {
   minimumX?: number;
   yScale?: 'linear' | 'log10';
   reverseX?: boolean;
+  reverseY?: boolean;
   showMarkers?: boolean;
+  /** Set false for a scatter-style comparison where adjacent points are not a measured path. */
+  showLines?: boolean;
   markerColorMode?: 'state' | 'series';
   emptyMessage?: string;
   className?: string;
@@ -77,6 +80,27 @@ function formatDefault(value: number): string {
   return new Intl.NumberFormat('zh-CN', { maximumSignificantDigits: 4 }).format(value);
 }
 
+export function getTrendYTickValues(
+  yMinimum: number,
+  yMaximum: number,
+  yScale: 'linear' | 'log10',
+  reverseY = false,
+): number[] {
+  const fractions = [0, 0.25, 0.5, 0.75, 1];
+  if (yScale === 'log10') {
+    const minimumLog = Math.log10(yMinimum);
+    const maximumLog = Math.log10(yMaximum);
+    return fractions.map((fraction) => 10 ** (
+      reverseY
+        ? minimumLog + fraction * (maximumLog - minimumLog)
+        : maximumLog - fraction * (maximumLog - minimumLog)
+    ));
+  }
+  return fractions.map((fraction) => reverseY
+    ? yMinimum + fraction * (yMaximum - yMinimum)
+    : yMaximum - fraction * (yMaximum - yMinimum));
+}
+
 function markerFill(state: BatchTrendPointState): string {
   if (state === 'valid') return '#65b98b';
   if (state === 'review') return '#d5a755';
@@ -88,6 +112,10 @@ function linePath(points: readonly PlottablePoint[]): string {
   return points
     .map((point, index) => `${index === 0 ? 'M' : 'L'}${point.xPosition.toFixed(2)},${point.yPosition.toFixed(2)}`)
     .join(' ');
+}
+
+export function shouldRenderTrendLines(showLines: boolean, pointCount: number): boolean {
+  return showLines && pointCount >= 2;
 }
 
 export const BatchTrendPlot = memo(function BatchTrendPlot({
@@ -103,7 +131,9 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
   minimumX,
   yScale = 'linear',
   reverseX = false,
+  reverseY = false,
   showMarkers = true,
+  showLines = true,
   markerColorMode = 'state',
   emptyMessage = '暂无可绘制的数值结果。',
   className,
@@ -137,9 +167,11 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
       const fraction = (value - xMinimum) / (xMaximum - xMinimum);
       return LEFT + (reverseX ? 1 - fraction : fraction) * innerWidth;
     };
-    const yPosition = (value: number) =>
-      TOP + (1 - (transformY(value) - transformedMinimumY) /
-        (automaticYMaximum - transformedMinimumY)) * innerHeight;
+    const yPosition = (value: number) => {
+      const fraction = (transformY(value) - transformedMinimumY) /
+        (automaticYMaximum - transformedMinimumY);
+      return TOP + (reverseY ? fraction : 1 - fraction) * innerHeight;
+    };
 
     const series = new Map<string, PlottablePoint[]>();
     for (const point of numericPoints) {
@@ -167,7 +199,7 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
         ),
       })),
     };
-  }, [minimumX, minimumY, points, reverseX, yScale]);
+  }, [minimumX, minimumY, points, reverseX, reverseY, yScale]);
 
   if (!model) {
     return <div className={['batch-trend-plot', className].filter(Boolean).join(' ')}>{emptyMessage}</div>;
@@ -199,12 +231,9 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
 
         {tickFractions.map((fraction) => {
           const y = TOP + fraction * (HEIGHT - TOP - BOTTOM);
-          const yValue = yScale === 'log10'
-            ? 10 ** (
-              Math.log10(model.yMaximum) -
-              fraction * (Math.log10(model.yMaximum) - Math.log10(model.yMinimum))
-            )
-            : model.yMaximum - fraction * (model.yMaximum - model.yMinimum);
+          const yValue = getTrendYTickValues(model.yMinimum, model.yMaximum, yScale, reverseY)[
+            Math.round(fraction * 4)
+          ];
           return (
             <g key={`horizontal-${fraction}`}>
               <line
@@ -252,7 +281,7 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
         })}
 
         <g clipPath={`url(#${clipId})`}>
-          {model.series.map((series) => (
+          {model.series.map((series) => shouldRenderTrendLines(showLines, series.points.length) ? (
             <path
               key={`line-${series.label}`}
               d={linePath(series.points)}
@@ -263,7 +292,7 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
               strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
             />
-          ))}
+          ) : null)}
           {showMarkers && model.series.flatMap((series) => series.points.map((point) => {
             const isSelected = point.id === selectedId;
             const title = `${point.label}: ${formatX(point.x)}, ${formatY(point.y as number)} (${point.state})`;

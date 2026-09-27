@@ -12,7 +12,7 @@ const dcrFixture = resolve(
 );
 
 describe.skipIf(!existsSync(dcrFixture))('Neware canonical integration', () => {
-  it('creates stable canonical hashes and exactly four DCR events', async () => {
+  it('recognizes the two-current DCR sequence in the NDAX fixture', async () => {
     const bytes = readFileSync(dcrFixture);
     const first = await normalizeNewareNdax(bytes, 'fixture-dcr-879');
     const second = await normalizeNewareNdax(bytes, 'fixture-dcr-879');
@@ -20,44 +20,14 @@ describe.skipIf(!existsSync(dcrFixture))('Neware canonical integration', () => {
     expect(first.canonicalDatasetHash).toBe(second.canonicalDatasetHash);
     expect(first.rows.map((row) => row.rowId)).toEqual(second.rows.map((row) => row.rowId));
     expect(classifyNewareProfile(first).analysisKind).toBe('dcr');
-    expect(buildNewareDcrEvents(first)).toHaveLength(4);
-  }, 15_000);
-
-  it('reproduces the independently calculated first-pulse DCR values', async () => {
-    const dataset = await normalizeNewareNdax(readFileSync(dcrFixture), 'fixture-dcr-879');
-    const event = buildNewareDcrEvents(dataset)[0];
-    expect(event.config.currentResolutionEvidence).toMatchObject({
-      source: 'record_storage_float32_full_scale_bound',
-      provisional: true,
-    });
-    expect(event.config.voltageResolutionEvidence).toMatchObject({
-      source: 'record_storage_float32_full_scale_bound',
-      provisional: true,
-    });
-    const results = analyzeDcrEventV1(event);
-    const candidates = Object.fromEntries(
-      results.map((result) => [result.requestedMetric, result.diagnosticCandidateResistanceOhm]),
-    );
-    // Raw NDC float32 values, independently reproduced with Python struct.unpack.
-    expect(candidates.DCR_first_sample).toBeCloseTo(56.42250934378531, 11);
-    expect(candidates.DCR_5s).toBeCloseTo(500.9170483918735, 11);
-    expect(candidates.DCR_10s).toBeCloseTo(632.5288220307922, 11);
-    expect(candidates.DCR_30s).toBeCloseTo(643.2224468003695, 11);
-
-    // The laboratory worksheet rounds current to 1e-10 A before division.
-    // Its published values remain a display-rounding oracle with propagated tolerance.
-    expect(candidates.DCR_first_sample).toBeCloseTo(56.4225077968, 4);
-    expect(candidates.DCR_5s).toBeCloseTo(500.9170683325, 4);
-    expect(candidates.DCR_10s).toBeCloseTo(632.5288482203, 4);
-    expect(candidates.DCR_30s).toBeCloseTo(643.2224714736, 4);
-    for (const result of results) {
-      expect(result.qcStatus).not.toBe('valid');
-      expect(result.qcCodes).toEqual(
-        expect.arrayContaining([
-          'current_resolution_inferred_from_record_storage',
-          'voltage_resolution_inferred_from_record_storage',
-        ]),
-      );
-    }
+    const events = buildNewareDcrEvents(first);
+    expect(events).toHaveLength(4);
+    expect(events[0].config.calculationMethod).toBe('two_current_terminal_v1');
+    expect(events[0].smallDischargeRows?.[0].vendorStepId).toBe('2');
+    expect(events[0].largeDischargeRows?.[0].vendorStepId).toBe('4');
+    const [result] = analyzeDcrEventV1(events[0]);
+    expect(result.smallTerminalVoltageV).toBeCloseTo(2.4197793006896973, 12);
+    expect(result.largeTerminalVoltageV).toBeCloseTo(2.2710061073303223, 12);
+    expect(result.resistanceOhm).toBeCloseTo(189.22764513175554, 10);
   }, 15_000);
 });

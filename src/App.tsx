@@ -41,11 +41,15 @@ import type {
   NormalizeWorkerResponse,
 } from './app/normalizeWorkerProtocol';
 import { buildReleaseExportModel, serializeAuditRowsToCsv } from './app/exportRows';
+import { saveExportBlob } from './app/fileExport';
+import { buildDirectDcrPlotRowsV1 } from './app/dcrPlotExport';
+import { buildDirectGittPlotRowsV1 } from './app/gittPlotExport';
+import { buildReportSheets, type ReportRowV1, type ReportSheetInputV1 } from './app/reportExport';
 import { canonicalizeScientificJson } from './science/hash';
 import { createCf1MaterialPreset } from './science/material';
 import { summarizeProjectAnalysisStatusV1 } from './product/projectStatus';
 import {
-  DCR_BATCH_STANDARD_POINT_SPECS_V1,
+  DCR_BATCH_DIFFERENTIAL_POINT_SPEC_V1,
   buildDcrBatchWorkbenchViewModelV1,
   type DcrBatchEventV1,
   type DcrBatchPointKeyV1,
@@ -60,6 +64,10 @@ import {
   buildGittOverviewVoltagePointsV1,
   buildGittPlotExportBundleV1,
   buildGittPulsePlotModelV1,
+  isCfxDisplayComparisonPointEligible,
+  isWhVoltageMetricPointEligible,
+  rowsThroughCfxMedianVoltageFloor,
+  visibleGittOverviewEntryIds,
 } from './product/gitt';
 import './product-workbench.css';
 
@@ -71,6 +79,8 @@ type BusyAction =
   | 'export-csv'
   | 'export-xlsx'
   | 'export-manifest'
+  | 'export-dcr'
+  | 'export-gitt'
   | 'export-project';
 type DcrFilter = 'all' | DcrBatchPointStateV1;
 type GittEventFilter = 'all' | 'main' | 'cutoff' | 'rest';
@@ -80,6 +90,26 @@ type AuditFocus = {
   metricKey?: DcrBatchPointKeyV1;
   pulseId?: string;
 } | null;
+
+type GittDiagnosticPulseProfile = {
+  pulses: ReadonlyArray<{
+    sourcePulseId: string;
+    sourceOrder: number;
+    eventClassification: string;
+  }>;
+};
+
+function diagnosticPulseIdForProfile(
+  profile: GittDiagnosticPulseProfile | null | undefined,
+  preferredPulseId: string | null,
+): string | null {
+  if (!profile) return null;
+  return profile.pulses.find((pulse) => pulse.sourcePulseId === preferredPulseId)?.sourcePulseId
+    ?? profile.pulses.find((pulse) => pulse.eventClassification === 'complete_1200s_standard_rest' && pulse.sourceOrder > 1)?.sourcePulseId
+    ?? profile.pulses.find((pulse) => pulse.eventClassification === 'complete_1200s_standard_rest')?.sourcePulseId
+    ?? profile.pulses[0]?.sourcePulseId
+    ?? null;
+}
 
 type GittLiteratureProfileEntry = {
   entry: BatchAnalysisEntryV1;
@@ -192,6 +222,7 @@ function pointStateForTrend(state: DcrBatchPointStateV1): BatchTrendPoint['state
 
 function cfxGittEventLabel(eventClassification: string): string {
   if (eventClassification === 'complete_1200s_standard_rest') return '主比较序列';
+  if (eventClassification === 'post_protocol_cutoff') return '协议截止后数据';
   if (eventClassification === 'excluded_cutoff_early') return '1.5 V 截止早停';
   if (eventClassification === 'excluded_post_rest_truncated') return '静置未完成';
   if (eventClassification === 'excluded_nonstandard_post_rest') return '非标准静置';
@@ -200,8 +231,16 @@ function cfxGittEventLabel(eventClassification: string): string {
 
 function cfxGittEventTone(eventClassification: string): 'comparative' | 'review' | 'missing' {
   if (eventClassification === 'complete_1200s_standard_rest') return 'comparative';
-  if (eventClassification === 'excluded_cutoff_early') return 'review';
+  if (eventClassification === 'excluded_cutoff_early' || eventClassification === 'post_protocol_cutoff') return 'review';
   return 'missing';
+}
+
+function cfxDisplayEligibilityLabel(eligibility: string): string {
+  if (eligibility === 'included') return '进入主图';
+  if (eligibility === 'excluded_comparison_target_median') return '低于中值电压比较目标';
+  if (eligibility === 'excluded_protocol_cutoff') return '协议截止后审计';
+  if (eligibility === 'excluded_not_computable') return '不可计算';
+  return '协议/过程不匹配';
 }
 
 function newareTerminationLabel(termination: string | null | undefined): string {
@@ -232,38 +271,29 @@ function resultStatus(entry: BatchAnalysisEntryV1): { label: string; tone: strin
   return { label: '没有可计算结果', tone: 'neutral' };
 }
 
-function rowsThroughFirstGittCutoff(
-  rows: WorkbenchDatasetV1['canonical']['rows'],
-  program: CfxLiterature1200sAnalysisV1['programExecution'] | null | undefined,
-): WorkbenchDatasetV1['canonical']['rows'] {
-  const firstCutoff = program?.events.find(
-    (event) => event.termination === 'stop_voltage_terminated',
-  );
-  if (!firstCutoff) return rows;
-  const endStepId = firstCutoff.postRestAnalysisStepId ?? firstCutoff.pulseAnalysisStepId;
-  let lastIncludedIndex = -1;
-  for (let index = 0; index < rows.length; index += 1) {
-    if (rows[index].analysisStepId === endStepId) lastIncludedIndex = index;
-  }
-  return lastIncludedIndex >= 0 ? rows.slice(0, lastIncludedIndex + 1) : rows;
-}
-
-function downloadText(fileName: string, text: string, type = 'application/json') {
+async function downloadText(fileName: string, text: string, type = 'application/json') {
   const blob = new Blob([text], { type });
-  downloadBlob(fileName, blob);
+  await downloadBlob(fileName, blob);
 }
 
-function downloadBlob(fileName: string, blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+async function downloadBlob(fileName: string, blob: Blob) {
+  await saveExportBlob(fileName, blob);
 }
 
 function jsonWithBigInt(value: unknown) {
   return JSON.stringify(value, (_key, entry) => (typeof entry === 'bigint' ? entry.toString() : entry), 2);
+}
+
+function readableError(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized && serialized !== '{}') return serialized;
+  } catch {
+    // Keep the stable fallback for values that cannot be serialized.
+  }
+  return fallback;
 }
 
 function nextPaint() {
@@ -311,9 +341,11 @@ function App() {
   const [busyAction, setBusyAction] = useState<BusyAction | null>(null);
   const [operationStatus, setOperationStatus] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
-  const [dcrMetric, setDcrMetric] = useState<DcrBatchPointKeyV1>('30s');
+  const [dcrMetric, setDcrMetric] = useState<DcrBatchPointKeyV1>('terminal');
   const [dcrFilter, setDcrFilter] = useState<DcrFilter>('all');
   const [gittEventFilter, setGittEventFilter] = useState<GittEventFilter>('main');
+  const [gittVoltageMetricReverseY, setGittVoltageMetricReverseY] = useState(true);
+  const [gittShowAllFiles, setGittShowAllFiles] = useState(false);
   const [selectedGittPulseId, setSelectedGittPulseId] = useState<string | null>(null);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditFocus, setAuditFocus] = useState<AuditFocus>(null);
@@ -408,15 +440,22 @@ function App() {
   );
 
   const gittOverviewPoints = useMemo<BatchTrendPoint[]>(
-    () => gittLiteratureProfiles.flatMap(({ entry }) => {
+    () => {
+      const visibleEntryIds = new Set(visibleGittOverviewEntryIds(
+        gittLiteratureProfiles.map(({ entry }) => entry.loaded.id),
+        selectedEntry?.loaded.id ?? null,
+        gittShowAllFiles,
+      ));
+      return gittLiteratureProfiles.filter(({ entry }) => visibleEntryIds.has(entry.loaded.id)).flatMap(({ entry, program, profile }) => {
       const materialLabel = entry.resolvedSettings?.recipeMaterialProfileId === 'fgs_cf1_reference'
         ? 'FGS'
         : 'CFₓ';
       const seriesColor = materialLabel === 'FGS' ? '#43b5c5' : '#d783c5';
       const seriesLabel = `${materialLabel} · ${shortFileName(entry.loaded.fileName, 24)}`;
-      const retainedRows = rowsThroughFirstGittCutoff(
+      const retainedRows = rowsThroughCfxMedianVoltageFloor(
         entry.loaded.canonical.rows,
-        entry.analysis?.cfxLiterature1200s?.programExecution,
+        program,
+        profile,
       );
       return buildGittOverviewVoltagePointsV1(retainedRows).map((point) => ({
         id: `${entry.loaded.id}:${point.id}`,
@@ -427,13 +466,20 @@ function App() {
         seriesColor,
         state: 'neutral',
       }));
-    }),
-    [gittLiteratureProfiles],
+      });
+    },
+    [gittLiteratureProfiles, gittShowAllFiles, selectedEntry?.loaded.id],
   );
 
   const gittVoltageMetricPoints = useMemo<BatchTrendPoint[]>(
-    () => gittLiteratureProfiles.flatMap(({ entry, profile }) => {
-      const pulseById = new Map(profile.pulses.map((pulse) => [pulse.sourcePulseId, pulse]));
+    () => {
+      const visibleEntryIds = new Set(visibleGittOverviewEntryIds(
+        gittLiteratureProfiles.map(({ entry }) => entry.loaded.id),
+        selectedEntry?.loaded.id ?? null,
+        gittShowAllFiles,
+      ));
+      return gittLiteratureProfiles.filter(({ entry }) => visibleEntryIds.has(entry.loaded.id)).flatMap(({ entry, profile }) => {
+        const pulseById = new Map(profile.pulses.map((pulse) => [pulse.sourcePulseId, pulse]));
       const materialLabel = entry.resolvedSettings?.recipeMaterialProfileId === 'fgs_cf1_reference'
         ? 'FGS'
         : 'CFₓ';
@@ -441,32 +487,34 @@ function App() {
       const seriesLabel = `${materialLabel} · ${shortFileName(entry.loaded.fileName, 24)}`;
       return (entry.analysis?.gittResults ?? []).flatMap((result) => {
         const pulse = pulseById.get(result.pulseId);
-        const voltageV = result.postRestEndPotentialV;
+        const voltageV = result.medianVoltageV;
         const candidate = result.metricValueCm2PerS;
-        if (
-          pulse?.eventClassification !== 'complete_1200s_standard_rest' ||
+        const endpointPoint = (
+          !isCfxDisplayComparisonPointEligible(pulse) ||
+          pulse === undefined ||
           voltageV === null ||
           candidate === null ||
-          candidate <= 0
-        ) return [];
-        return [{
-          id: result.pulseId,
-          x: voltageV,
-          y: candidate,
-          label: `${seriesLabel} · 脉冲 ${pulse.sourceOrder}`,
-          seriesLabel,
-          seriesColor,
-          seriesOrder: pulse.sourceOrder,
-          state: 'neutral' as const,
-        }];
+          !isWhVoltageMetricPointEligible(result)
+        )
+          ? []
+          : [{
+            id: result.pulseId,
+            x: voltageV,
+            y: candidate,
+            label: `${seriesLabel} · Endpoint · 脉冲 ${pulse.sourceOrder}`,
+            seriesLabel: `${seriesLabel} · Endpoint WH`,
+            seriesColor,
+            seriesOrder: pulse.sourceOrder,
+            state: 'neutral' as const,
+          }];
+        return endpointPoint;
       });
-    }),
-    [gittLiteratureProfiles],
+      });
+    },
+    [gittLiteratureProfiles, gittShowAllFiles, selectedEntry?.loaded.id],
   );
 
-  const selectedMetricSpec = DCR_BATCH_STANDARD_POINT_SPECS_V1.find(
-    (spec) => spec.key === dcrMetric,
-  ) ?? DCR_BATCH_STANDARD_POINT_SPECS_V1[3];
+  const selectedMetricSpec = DCR_BATCH_DIFFERENTIAL_POINT_SPEC_V1;
 
   const filteredDcrEvents = useMemo(
     () => dcrModel.events.filter((event) => {
@@ -516,7 +564,7 @@ function App() {
     );
     if (!profileEntry) return null;
     return {
-      programEvent: profileEntry.program.events.find(
+      programEvent: profileEntry.program.allEvents.find(
         (event) => event.sourcePulseId === auditFocus.pulseId,
       ) ?? null,
       profilePulse: profileEntry.profile.pulses.find(
@@ -649,6 +697,25 @@ function App() {
     }));
   };
 
+  const setRegressionManualWindowValue = (
+    field: 'startS' | 'endS',
+    rawValue: string,
+  ) => {
+    const trimmed = rawValue.trim();
+    const value = trimmed === '' ? null : Number(trimmed);
+    setSettings((current) => ({
+      ...current,
+      regressionManualWindow: {
+        startS: field === 'startS'
+          ? (Number.isFinite(value) ? value : null)
+          : current.regressionManualWindow?.startS ?? null,
+        endS: field === 'endS'
+          ? (Number.isFinite(value) ? value : null)
+          : current.regressionManualWindow?.endS ?? null,
+      },
+    }));
+  };
+
   const confirmGittRecipe = () => {
     if (blockedGittDraftRecipePlans.length > 0) {
       const first = blockedGittDraftRecipePlans[0];
@@ -704,6 +771,37 @@ function App() {
             <h3>{hasBlocking ? '确认用于计算的实验参数' : 'GITT 分析参数已就绪'}</h3>
           </div>
           <span>{entry.loaded.fileName}</span>
+        </div>
+
+        <div className="product-recipe__batch-mass" aria-label="批量 GITT 文件活性物质质量">
+          <div>
+            <strong>批量文件的活性物质质量分别计算</strong>
+            <p>每个 NDAX 文件独立使用自己的质量；该质量只进入对应文件的 qref 和 WH 归一化，不会在多个文件之间取平均。</p>
+          </div>
+          <div className="product-recipe__batch-mass-list">
+            {gittDraftRecipePlans.map(({ entry: fileEntry, plan: filePlan }) => {
+              const fileSelection = recipe.datasetSelectionsBySourceFileHash[filePlan.sourceFileHash] ?? null;
+              const fileMassMg = fileSelection?.activeMassOverrideMg
+                ?? (filePlan.resolved.activeMassG === null ? null : filePlan.resolved.activeMassG * 1000);
+              const fileIsSelected = fileEntry.loaded.id === entry.loaded.id;
+              return (
+                <button
+                  type="button"
+                  className={`product-recipe__batch-mass-item ${fileIsSelected ? 'is-selected' : ''}`}
+                  key={fileEntry.loaded.id}
+                  onClick={() => selectEntry(fileEntry)}
+                  disabled={isBusy}
+                  title="切换到此文件并确认它的活性物质质量"
+                >
+                  <span>
+                    <strong title={fileEntry.loaded.fileName}>{fileEntry.loaded.fileName}</strong>
+                    <small>{filePlan.resolved.activeMassSourceId === null ? '质量待确认' : `来源：${filePlan.resolved.activeMassSourceId}`}</small>
+                  </span>
+                  <b>{fileMassMg === null ? '待确认' : `${formatNumber(fileMassMg, 6)} mg`}</b>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         <div className="product-recipe__layout">
@@ -931,6 +1029,46 @@ function App() {
                   <small>当摩尔体积按 Vₘ=M/ρ 派生时，M 会与等效长度公式中的 M 相消；仍保留为材料定义与审计参数。</small>
                 </label>
               </div>
+
+              <div className="product-recipe__physical-heading">
+                <div>
+                  <strong>回归验证窗口（可选）</strong>
+                  <p>只影响 E–√t 回归诊断，不影响 endpoint、τ、中值电压、协议筛选或 DCR。</p>
+                </div>
+                <span>单位：pulse elapsed time / s</span>
+              </div>
+              <div className="product-recipe__field-grid">
+                <label className="product-recipe__field">
+                  <span>手动回归起点</span>
+                  <div className="product-recipe__number-input">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      inputMode="decimal"
+                      value={settings.regressionManualWindow?.startS ?? ''}
+                      onChange={(event) => setRegressionManualWindowValue('startS', event.target.value)}
+                    />
+                    <span>s</span>
+                  </div>
+                  <small>留空则不启用手动窗口。</small>
+                </label>
+                <label className="product-recipe__field">
+                  <span>手动回归终点</span>
+                  <div className="product-recipe__number-input">
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      inputMode="decimal"
+                      value={settings.regressionManualWindow?.endS ?? ''}
+                      onChange={(event) => setRegressionManualWindowValue('endS', event.target.value)}
+                    />
+                    <span>s</span>
+                  </div>
+                  <small>终点必须大于起点；不满足时只标记回归不可计算。</small>
+                </label>
+              </div>
             </div>
 
             {!hasBlocking && (
@@ -1003,15 +1141,16 @@ function App() {
       const existingIds = new Set(datasets.map((dataset) => dataset.id));
       const normalizer = new Worker(new URL('./workers/normalize.worker.ts', import.meta.url), {
         type: 'module',
-        name: 'gitt-dcr-neware-normalizer',
+        name: 'gitt-dcr-file-normalizer',
       });
 
       try {
         for (const [index, file] of selectedFiles.entries()) {
           setOperationStatus(`正在识别 ${index + 1}/${selectedFiles.length}：${file.name}`);
           await nextPaint();
-          if (!file.name.toLowerCase().endsWith('.ndax')) {
-            messages.push(`${file.name}：V1 目前仅直接读取 Neware NDAX。LAND 请先使用官方 CSV/XLSX 导出。`);
+          const lowerFileName = file.name.toLowerCase();
+          if (!lowerFileName.endsWith('.ndax') && !lowerFileName.endsWith('.cex')) {
+            messages.push(`${file.name}：目前仅支持 Neware NDAX 和 LAND CEX。`);
             continue;
           }
           try {
@@ -1062,7 +1201,7 @@ function App() {
         setSelectedId(imported.at(-1)?.id ?? null);
         setPage('data');
       }
-      setNotice(messages.length > 0 ? messages.join('\n') : `已导入 ${imported.length} 个 NDAX 文件；批量结果会在后台分析完成后自动更新。`);
+      setNotice(messages.length > 0 ? messages.join('\n') : `已导入 ${imported.length} 个数据文件；批量结果会在后台分析完成后自动更新。`);
       setOperationStatus(`导入完成：${imported.length} 个数据集。`);
     } catch (error) {
       setNotice(`导入失败：${error instanceof Error ? error.message : 'import_failed'}`);
@@ -1087,7 +1226,7 @@ function App() {
     setOperationStatus(`正在保存 ${datasets.length} 个 Canonical 数据集…`);
     try {
       await nextPaint();
-      downloadText(
+      await downloadText(
         `pulselab-gitt-dcr-project-${new Date().toISOString().slice(0, 10)}.json`,
         serializeWorkbenchProject(settings, datasets, analysisRecipe),
       );
@@ -1136,10 +1275,10 @@ function App() {
         recipePlan: selectedEntry.recipePlan,
         exportedAtIso: new Date().toISOString(),
       });
-      downloadText(`${selectedEntry.loaded.fileName}.manifest.json`, jsonWithBigInt(release.manifest));
+      await downloadText(`${selectedEntry.loaded.fileName}.manifest.json`, jsonWithBigInt(release.manifest));
       setNotice('已导出所选文件的审计 Manifest。');
     } catch (error) {
-      setNotice(`Manifest 导出失败：${error instanceof Error ? error.message : 'manifest_export_failed'}`);
+      setNotice(`Manifest 导出失败：${readableError(error, 'manifest_export_failed')}`);
     } finally {
       setBusyAction(null);
     }
@@ -1161,21 +1300,283 @@ function App() {
       const rows = release.auditRows;
       if (rows.length === 0) throw new Error('no_exportable_results');
       const csv = serializeAuditRowsToCsv(rows);
-      downloadText(`${selectedEntry.loaded.fileName}.audit.csv`, `\ufeff${csv}`, 'text/csv;charset=utf-8');
+      await downloadText(`${selectedEntry.loaded.fileName}.audit.csv`, `\ufeff${csv}`, 'text/csv;charset=utf-8');
       setNotice(`已导出 ${rows.length} 行原始审计结果。`);
     } catch (error) {
-      setNotice(`CSV 导出失败：${error instanceof Error ? error.message : 'csv_export_failed'}`);
+      setNotice(`CSV 导出失败：${readableError(error, 'csv_export_failed')}`);
     } finally {
       setBusyAction(null);
     }
+  };
+
+  const buildReportData = (): Omit<ReportSheetInputV1, 'scope'> & { projectOverview: ReportRowV1[] } => {
+    const analyzedEntries = entries.filter((entry) => entry.analysis !== null);
+    const projectOverview = entries.map((entry) => ({
+      fileName: entry.loaded.fileName,
+      analysisKind: entry.classification.analysisKind,
+      rowCount: entry.loaded.canonical.rows.length,
+      activeMassMg: entry.analysis?.activeMassProvenance?.activeMassG === null ||
+        entry.analysis?.activeMassProvenance?.activeMassG === undefined
+        ? entry.loaded.canonical.metadata.activeMassMg
+        : entry.analysis.activeMassProvenance.activeMassG * 1000,
+      activeMassSourceId: entry.analysis?.activeMassProvenance?.sourceId ?? null,
+      analysisState: entry.error
+        ? 'analysis_error'
+        : entry.analysis
+          ? 'analyzed'
+          : entry.classification.analysisKind === 'gitt' && !entry.recipePlan.readyToAnalyze
+            ? 'awaiting_recipe_confirmation'
+            : 'not_requested',
+      scientificValid: entry.analysis?.counts.valid ?? null,
+      scientificReview: entry.analysis?.counts.review ?? null,
+      scientificRejected: entry.analysis?.counts.rejected ?? null,
+      scientificNotComputable: entry.analysis?.counts.notComputable ?? null,
+      sourceFileHash: entry.loaded.canonical.sourceFileHash,
+    }));
+    const releaseByEntry = new Map(
+      analyzedEntries.map((entry) => [entry.loaded.id, buildReleaseExportModel({
+        loaded: entry.loaded,
+        analysis: entry.analysis as NonNullable<typeof entry.analysis>,
+        resolvedSettings: entry.resolvedSettings,
+        recipePlan: entry.recipePlan,
+        exportedAtIso: new Date().toISOString(),
+      })]),
+    );
+    const dcrResults = analyzedEntries
+      .filter((entry) => entry.classification.analysisKind === 'dcr')
+      .flatMap((entry) => (releaseByEntry.get(entry.loaded.id)?.auditRows ?? []).map((row) => ({
+        fileName: entry.loaded.fileName,
+        ...row,
+      })));
+    const dcrPlotRows = buildDirectDcrPlotRowsV1(
+      analyzedEntries
+        .filter((entry) => entry.classification.analysisKind === 'dcr')
+        .map((entry) => ({
+          sourceId: entry.loaded.id,
+          fileName: entry.loaded.fileName,
+          canonicalRows: entry.loaded.canonical.rows,
+          events: dcrModel.events.filter((event) => event.dataset.datasetId === entry.loaded.id),
+        })),
+    );
+    const gittSummary = gittLiteratureProfiles.flatMap(({ entry, program, profile }) => {
+      const programEventByPulseId = new Map(program.allEvents.map((event) => [event.sourcePulseId, event]));
+      const resultByPulseId = new Map((entry.analysis?.gittResults ?? []).map((result) => [result.pulseId, result]));
+      return profile.pulses.map((pulse) => {
+        const programEvent = programEventByPulseId.get(pulse.sourcePulseId) ?? null;
+        const result = resultByPulseId.get(pulse.sourcePulseId) ?? null;
+        const regressionWindow = (windowId: string) =>
+          (result?.regressionWindows ?? []).find((window) => window.windowId === windowId) ?? null;
+        const legacyWindow = regressionWindow('legacy_first_5');
+        const cfx10sWindow = regressionWindow('cfx_10s');
+        const cfx425Window = regressionWindow('cfx_4_25s');
+        const cfx164Window = regressionWindow('cfx_1_64s');
+        const manualWindow = regressionWindow('manual');
+        return {
+          fileName: entry.loaded.fileName,
+          'Pulse / #': pulse.sourceOrder,
+          'Pulse duration / s': programEvent?.actualPulseDurationS ?? null,
+          termination: programEvent?.termination ?? null,
+          postRestState: programEvent?.postRestState ?? null,
+          'Post-rest duration / s': pulse.polarization.postRestDurationS,
+          sequenceClassification: pulse.eventClassification,
+          protocolStatus: pulse.protocolStatus,
+          comparisonUse: pulse.comparativeUse,
+          primaryComparisonEligibility: pulse.primaryComparisonEligibility,
+          displayComparisonEligibility: pulse.displayComparisonEligibility,
+          'D_app / cm²·s^-1': result?.metricValueCm2PerS ?? null,
+          'Audit D_app / cm²·s^-1': pulse.auditDAppCandidateCm2PerS,
+          'Specific current / mA·g^-1': pulse.polarization.equivalentSpecificCurrentMahPerG,
+          'Regression D_app / cm²·s^-1': result?.regressionCandidateMetricValueCm2PerS ?? null,
+          'Legacy first 5 D_app / cm²·s^-1': legacyWindow?.metricValueCm2PerS ?? null,
+          'Legacy first 5 R²': legacyWindow?.rSquared ?? null,
+          'CFx 10 s D_app / cm²·s^-1': cfx10sWindow?.metricValueCm2PerS ?? null,
+          'CFx 10 s slope / V·s^-1/2': cfx10sWindow?.slopeVPerSqrtS ?? null,
+          'CFx 10 s intercept / V': cfx10sWindow?.interceptV ?? null,
+          'CFx 10 s R²': cfx10sWindow?.rSquared ?? null,
+          'CFx 10 s RMSE / V': cfx10sWindow?.rmseV ?? null,
+          'CFx 10 s n': cfx10sWindow?.uniqueTimePointCount ?? null,
+          'CFx 10 s actual window / s': cfx10sWindow === null || cfx10sWindow.actualStartS === null || cfx10sWindow.actualEndS === null
+            ? null
+            : `${cfx10sWindow.actualStartS}–${cfx10sWindow.actualEndS}`,
+          'CFx 10 s sampling coverage': cfx10sWindow?.samplingCoverage ?? null,
+          'CFx 10 s linearity': cfx10sWindow?.linearityClass ?? null,
+          'Window stability / decade': result?.windowStabilityDecades ?? null,
+          'Endpoint–slope divergence / decade': result?.methodDivergenceDecades ?? null,
+          'Absolute Endpoint–slope divergence / decade': result?.absMethodDivergenceDecades ?? null,
+          'Endpoint start temporal resolution / s': result?.endpointStartTemporalResolutionS ?? null,
+          'Initial observed voltage drop / V': result?.initialObservedDropV ?? null,
+          'CFx 4–25 s D_app / cm²·s^-1': cfx425Window?.metricValueCm2PerS ?? null,
+          'CFx 4–25 s slope / V·s^-1/2': cfx425Window?.slopeVPerSqrtS ?? null,
+          'CFx 4–25 s R²': cfx425Window?.rSquared ?? null,
+          'CFx 4–25 s n': cfx425Window?.uniqueTimePointCount ?? null,
+          'CFx 4–25 s actual window / s': cfx425Window === null || cfx425Window.actualStartS === null || cfx425Window.actualEndS === null
+            ? null
+            : `${cfx425Window.actualStartS}–${cfx425Window.actualEndS}`,
+          'CFx 4–25 s status': cfx425Window?.status ?? null,
+          'CFx 1–64 s D_app / cm²·s^-1': cfx164Window?.metricValueCm2PerS ?? null,
+          'CFx 1–64 s slope / V·s^-1/2': cfx164Window?.slopeVPerSqrtS ?? null,
+          'CFx 1–64 s R²': cfx164Window?.rSquared ?? null,
+          'CFx 1–64 s n': cfx164Window?.uniqueTimePointCount ?? null,
+          'CFx 1–64 s actual window / s': cfx164Window === null || cfx164Window.actualStartS === null || cfx164Window.actualEndS === null
+            ? null
+            : `${cfx164Window.actualStartS}–${cfx164Window.actualEndS}`,
+          'CFx 1–64 s status': cfx164Window?.status ?? null,
+          'Manual D_app / cm²·s^-1': manualWindow?.metricValueCm2PerS ?? null,
+          'Manual slope / V·s^-1/2': manualWindow?.slopeVPerSqrtS ?? null,
+          'Manual R²': manualWindow?.rSquared ?? null,
+          'Manual n': manualWindow?.uniqueTimePointCount ?? null,
+          'Manual status': manualWindow?.status ?? null,
+          'Regression log10 D range': result?.regressionWindowSensitivity?.log10DRange ?? null,
+          'Median voltage / V': result?.medianVoltageV ?? null,
+          'Pre-rest robust end / V': result?.preRestEndPotentialV ?? null,
+          'Post-rest robust end / V': result?.postRestEndPotentialV ?? null,
+          'Pulse t=0 loaded voltage / V': result?.pulseT0VoltageV ?? null,
+          'Pulse t=0 loaded current / A': result?.pulseT0CurrentA ?? null,
+          'Endpoint start time / s': result?.endpointStartTimeS ?? null,
+          'First positive pulse time / s': result?.firstPositivePulseTimeS ?? null,
+          'First positive pulse voltage / V': result?.firstPositivePulseVoltageV ?? null,
+          'Pulse end voltage / V': result?.pulseEndVoltageV ?? null,
+          'ΔEt / V': result?.deltaEtV ?? null,
+          'ΔEs / V': result?.deltaEsV ?? null,
+          'Raw pre-rest last / V': result?.preRestLastRawVoltageV ?? null,
+          'Raw post-rest last / V': result?.postRestLastRawVoltageV ?? null,
+          'Raw ΔEs / V': result?.deltaEsRawV ?? null,
+          'Onset observed drop / V': result?.onsetObservedDropV ?? null,
+          'Early polarization drop / V': result?.earlyPolarizationDropV ?? null,
+          'Pre-rest-to-first-positive drop / V': result?.preRestToFirstPositiveDropV ?? null,
+          'Legacy first-positive ΔEt / V': result?.legacyFirstPositiveDeltaEtV ?? null,
+          'Legacy first-positive Endpoint D_app / cm²·s^-1': result?.legacyFirstPositiveEndpointMetricValueCm2PerS ?? null,
+          'Endpoint D ratio new/legacy': result?.endpointDRatioVsLegacy ?? null,
+          'Fit slope / V·s^-1/2': result?.fitDiagnostics.slopeVPerSqrtS ?? null,
+          'Fit intercept / V': result?.fitDiagnostics.interceptV ?? null,
+          'Fit R²': result?.fitDiagnostics.rSquared ?? null,
+          'Pulse-end polarization / V': pulse.polarization.absolutePulseEndPolarizationV,
+          'Rest-end shift / V': pulse.polarization.restEndPotentialShiftV,
+          'Pulse capacity fraction': pulse.polarization.pulseCapacityFraction,
+          'Equivalent specific current / mA·g^-1': pulse.polarization.equivalentSpecificCurrentMahPerG,
+          protocolCutoffState: programEvent?.isPostProtocolCutoff
+            ? 'post_protocol_cutoff'
+            : programEvent?.termination === 'stop_voltage_terminated'
+              ? 'first_protocol_cutoff_event'
+              : 'before_first_protocol_cutoff',
+          genericCalculationState: pulse.sourceGenericState.calculationState,
+          genericQcStatus: pulse.sourceGenericState.qcStatus,
+          genericQcCodes: pulse.sourceGenericState.qcCodes.join(' | '),
+          primaryEndpointQcStatus: pulse.sourceGenericState.primaryEndpointQcStatus,
+          primaryEndpointQcReasons: JSON.stringify(pulse.sourceGenericState.primaryEndpointQcReasons),
+          cfx10SlopeQcStatus: pulse.sourceGenericState.cfx10SlopeQcStatus,
+          cfx10SlopeQcReasons: JSON.stringify(pulse.sourceGenericState.cfx10SlopeQcReasons),
+          modelWarnings: pulse.modelWarnings.map((warning) => warning.code).join(' | '),
+        };
+      });
+    });
+    const gittSummaryByFile = gittLiteratureProfiles.map(({ entry, program, profile }) => ({
+      fileName: entry.loaded.fileName,
+      programProfileId: program.profile.profileId,
+      programRecognized: program.programRecognized,
+      timeLimitReachedCount: program.summary.timeLimitReachedCount,
+      stopVoltageTerminatedCount: program.summary.stopVoltageTerminatedCount,
+      retainedPulseCount: program.summary.retainedPulseCount,
+      excludedAfterFirstCutoffCount: program.summary.excludedAfterFirstCutoffCount,
+      postProtocolCutoffEventCount: program.summary.postProtocolCutoffEventCount,
+      firstCutoffSourcePulseId: program.summary.firstCutoffSourcePulseId,
+      mainComparativeSequenceCount: program.summary.mainComparativeSequenceCount,
+      fileEndTruncatedRestCount: program.summary.fileEndTruncatedRestCount,
+      medianDAppCandidateCm2PerS: profile.summary.medianDAppCandidateCm2PerS,
+      medianAbsolutePulseEndPolarizationV: profile.summary.medianAbsolutePulseEndPolarizationV,
+      genericSmallPerturbationExceededCount: profile.summary.genericSmallPerturbationExceededCount,
+      primaryComparisonIncludedCount: profile.summary.primaryComparisonIncludedCount,
+      primaryComparisonIncludedWithWarningsCount: profile.summary.primaryComparisonIncludedWithWarningsCount,
+      primaryComparisonExcludedCount: profile.summary.primaryComparisonExcludedCount,
+      displayComparisonIncludedCount: profile.summary.displayComparisonIncludedCount,
+      displayComparisonExcludedCount: profile.summary.displayComparisonExcludedCount,
+      comparisonTargetMedianExcludedCount: profile.summary.comparisonTargetMedianExcludedCount,
+      comparabilityGroupingKey: profile.comparabilityGroupingKey,
+      comparabilityBoundary: profile.comparabilityBoundary,
+    }));
+    const plotBundles = gittLiteratureProfiles.map(({ entry, program, profile }) => {
+      const results = entry.analysis?.gittResults ?? [];
+      const pulseById = new Map(profile.pulses.map((pulse) => [pulse.sourcePulseId, pulse]));
+      const diagnosticPulseId = diagnosticPulseIdForProfile(
+        profile,
+        entry.loaded.id === selectedEntry?.loaded.id ? selectedGittPulseId : null,
+      );
+      const eligibleMedianPulseIds = new Set(
+        results.flatMap((result) => {
+          const pulse = pulseById.get(result.pulseId);
+          return isCfxDisplayComparisonPointEligible(pulse) && isWhVoltageMetricPointEligible(result)
+            ? [result.pulseId]
+            : [];
+        }),
+      );
+      const fullBundle = buildGittPlotExportBundleV1(
+        rowsThroughCfxMedianVoltageFloor(
+          entry.loaded.canonical.rows,
+          program,
+          profile,
+        ),
+        results,
+        new Map(profile.pulses.map((pulse) => [pulse.sourcePulseId, pulse.sourceOrder])),
+      );
+      return {
+        sourceId: entry.loaded.id,
+        fileName: entry.loaded.fileName,
+        // The literature E–t and τ¹ᐟ²–V panels describe one diagnostic pulse.
+        // Keep the full trace and all D–V points, but do not concatenate every
+        // pulse into one curve that resets its x-axis repeatedly.
+        bundle: {
+          ...fullBundle,
+          pulseResponseRows: diagnosticPulseId === null
+            ? []
+            : fullBundle.pulseResponseRows.filter((row) => row.pulseId === diagnosticPulseId),
+          tauVoltageRows: diagnosticPulseId === null
+            ? []
+            : fullBundle.tauVoltageRows.filter((row) => row.pulseId === diagnosticPulseId),
+        },
+        eligibleMedianPulseIds,
+      };
+    });
+    const directGittPlotRows = buildDirectGittPlotRowsV1(plotBundles);
+    const gittTimeVoltage = directGittPlotRows.timeVoltage;
+    const gittPulseResponse = directGittPlotRows.pulseResponse;
+    const gittTauVoltage = directGittPlotRows.tauVoltage;
+    const gittMedianDli = directGittPlotRows.medianDli;
+    const gittMedianDliCommon = directGittPlotRows.medianDliCommon;
+    const cfxProfile = analyzedEntries
+      .filter((entry) => entry.analysis?.cfxLiterature1200s !== null && entry.analysis?.cfxLiterature1200s !== undefined)
+      .flatMap((entry) => (releaseByEntry.get(entry.loaded.id)?.cfxProfileRows ?? []).map((row) => ({
+        fileName: entry.loaded.fileName,
+        ...row,
+      })));
+    const manifest = analyzedEntries.flatMap((entry) => (releaseByEntry.get(entry.loaded.id)?.manifestRows ?? []).map((row) => ({
+      fileName: entry.loaded.fileName,
+      key: row.key,
+      value: row.value,
+    })));
+    return {
+      projectOverview,
+      dcrResults,
+      dcrTimeVoltage: dcrPlotRows.timeVoltage,
+      dcrTimeDcr: dcrPlotRows.timeDcr,
+      gittSummary: [...gittSummaryByFile, ...gittSummary],
+      gittTimeVoltage,
+      gittPulseResponse,
+      gittTauVoltage,
+      gittMedianDli,
+      gittMedianDliCommon,
+      cfxProfile,
+      manifest,
+    };
   };
 
   const exportSelectedXlsx = async () => {
     if (!selectedEntry?.analysis || isBusy || selectedEntry.pending) return;
     setBusyAction('export-xlsx');
     setOperationStatus(`正在生成 XLSX：${selectedEntry.loaded.fileName}`);
+    let exportStage = 'prepare';
     try {
       await nextPaint();
+      exportStage = 'build_report_data';
       const release = buildReleaseExportModel({
         loaded: selectedEntry.loaded,
         analysis: selectedEntry.analysis,
@@ -1190,42 +1591,109 @@ function App() {
           (pulse) => [pulse.sourcePulseId, pulse.sourceOrder],
         ),
       );
-      const plotBundle = selectedEntry.classification.analysisKind === 'gitt'
+      const fullPlotBundle = selectedEntry.classification.analysisKind === 'gitt'
         ? buildGittPlotExportBundleV1(
-          rowsThroughFirstGittCutoff(
+          rowsThroughCfxMedianVoltageFloor(
             selectedEntry.loaded.canonical.rows,
             selectedEntry.analysis.cfxLiterature1200s?.programExecution,
+            selectedEntry.analysis.cfxLiterature1200s?.comparativeProfile,
           ),
           selectedEntry.analysis.gittResults,
           selectedPulseOrderById,
         )
         : null;
+      const diagnosticPulseId = diagnosticPulseIdForProfile(
+        selectedGittLiteratureProfile?.profile,
+        selectedGittPulseId,
+      );
+      const plotBundle = fullPlotBundle === null
+        ? null
+        : {
+          ...fullPlotBundle,
+          pulseResponseRows: diagnosticPulseId === null
+            ? []
+            : fullPlotBundle.pulseResponseRows.filter((row) => row.pulseId === diagnosticPulseId),
+          tauVoltageRows: diagnosticPulseId === null
+            ? []
+            : fullPlotBundle.tauVoltageRows.filter((row) => row.pulseId === diagnosticPulseId),
+        };
+      const selectedGittPlotRows = plotBundle === null
+        ? null
+        : buildDirectGittPlotRowsV1([{
+          sourceId: selectedEntry.loaded.id,
+          fileName: selectedEntry.loaded.fileName,
+          bundle: plotBundle,
+          eligibleMedianPulseIds: new Set(
+            selectedEntry.analysis.gittResults.flatMap((result) => {
+              const pulse = selectedGittLiteratureProfile?.profile.pulses.find(
+                (candidate) => candidate.sourcePulseId === result.pulseId,
+              );
+              return isCfxDisplayComparisonPointEligible(pulse) && isWhVoltageMetricPointEligible(result)
+                ? [result.pulseId]
+                : [];
+            }),
+          ),
+        }]);
+      const selectedGittTimeVoltage = selectedGittPlotRows?.timeVoltage ?? [];
+      const selectedGittPulseResponse = selectedGittPlotRows?.pulseResponse ?? [];
+      const selectedGittTauVoltage = selectedGittPlotRows?.tauVoltage ?? [];
+      const selectedGittMedianDli = selectedGittPlotRows?.medianDli ?? [];
+      const selectedGittMedianDliCommon = selectedGittPlotRows?.medianDliCommon ?? [];
+      exportStage = 'build_xlsx';
       const { createXlsxWorkbook } = await import('./app/xlsx');
-      const blob = await createXlsxWorkbook([
-        { name: 'Calculation results', columns: Object.keys(rows[0]), rows },
-        { name: 'Manifest', columns: ['key', 'value'], rows: release.manifestRows },
-        ...(release.cfxProfileRows.length > 0
-          ? [{ name: 'CFx1200 profile', columns: Object.keys(release.cfxProfileRows[0]), rows: release.cfxProfileRows }]
-          : []),
-        ...(plotBundle !== null && plotBundle.fullTraceRows.length > 0
-          ? [{ name: 'GITT full trace', columns: Object.keys(plotBundle.fullTraceRows[0]), rows: plotBundle.fullTraceRows }]
-          : []),
-        ...(plotBundle !== null && plotBundle.pulseResponseRows.length > 0
-          ? [{ name: 'GITT pulse response', columns: Object.keys(plotBundle.pulseResponseRows[0]), rows: plotBundle.pulseResponseRows }]
-          : []),
-        ...(plotBundle !== null && plotBundle.sqrtFitRows.length > 0
-          ? [{ name: 'GITT sqrt fit', columns: Object.keys(plotBundle.sqrtFitRows[0]), rows: plotBundle.sqrtFitRows }]
-          : []),
-        ...(plotBundle !== null && plotBundle.whVoltageRows.length > 0
-          ? [{ name: 'GITT WH vs voltage', columns: Object.keys(plotBundle.whVoltageRows[0]), rows: plotBundle.whVoltageRows }]
-          : []),
-      ]);
-      downloadBlob(`${selectedEntry.loaded.fileName}.analysis.xlsx`, blob);
+      const blob = await createXlsxWorkbook(plotBundle === null
+        ? [
+          { name: 'Calculation results', columns: Object.keys(rows[0]), rows },
+          { name: 'Manifest', columns: ['key', 'value'], rows: release.manifestRows },
+          ...(release.cfxProfileRows.length > 0
+            ? [{ name: 'CFx1200 profile', columns: Object.keys(release.cfxProfileRows[0]), rows: release.cfxProfileRows }]
+            : []),
+        ]
+        : [
+          { name: 'GITT 时间-电压', columns: Object.keys(selectedGittTimeVoltage[0] ?? { 'Time / min': 0, 'Voltage / V': 0 }), rows: selectedGittTimeVoltage },
+          { name: 'GITT 静置-脉冲-静置', columns: Object.keys(selectedGittPulseResponse[0] ?? { 'Time / min': 0, 'Voltage / V': 0 }), rows: selectedGittPulseResponse },
+          { name: 'GITT τ-电压', columns: Object.keys(selectedGittTauVoltage[0] ?? { 'τ¹ᐟ² / s¹ᐟ²': 0, 'Voltage / V': 0 }), rows: selectedGittTauVoltage },
+          { name: 'Full_Eligible_Data', columns: Object.keys(selectedGittMedianDli[0] ?? { 'Median voltage / V': 0, 'D_Li / cm²·s^-1': 0 }), rows: selectedGittMedianDli },
+          { name: 'Common_Voltage_Range', columns: Object.keys(selectedGittMedianDliCommon[0] ?? { 'Median voltage / V': 0, 'D_Li / cm²·s^-1': 0 }), rows: selectedGittMedianDliCommon },
+        ]);
+      exportStage = 'save_file';
+      await downloadBlob(`${selectedEntry.loaded.fileName}.analysis.xlsx`, blob);
       setNotice(plotBundle === null
         ? `已导出 ${rows.length} 行计算结果和 Manifest。`
-        : '已导出计算结果、完整曲线、单脉冲响应、E–√t 和 WH–电压作图数据。');
+        : '已导出 GITT 作图数据：时间–电压、静置–脉冲–静置、τ¹ᐟ²–电压、完整合格数据和共同电压范围。');
     } catch (error) {
-      setNotice(`XLSX 导出失败：${error instanceof Error ? error.message : 'xlsx_export_failed'}`);
+      setNotice(`XLSX 导出失败（${exportStage}）：${readableError(error, 'xlsx_export_failed')}`);
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const exportScopedWorkbook = async (scope: 'dcr' | 'gitt') => {
+    if (isBusy || analysisPending || settingsPending || gittRecipePending || entries.length === 0) return;
+    setBusyAction(scope === 'dcr' ? 'export-dcr' : 'export-gitt');
+    setOperationStatus(`正在生成 ${scope === 'dcr' ? 'DCR' : 'GITT'} XLSX…`);
+    let exportStage = 'prepare';
+    try {
+      await nextPaint();
+      exportStage = 'build_report_data';
+      const data = buildReportData();
+      const fileNames = new Set(
+        (scope === 'dcr' ? data.dcrResults : data.gittTimeVoltage)
+          .map((row) => typeof row.fileName === 'string' ? row.fileName : null)
+          .filter((value): value is string => value !== null),
+      );
+      exportStage = 'build_xlsx';
+      const { createXlsxWorkbook } = await import('./app/xlsx');
+      const blob = await createXlsxWorkbook(buildReportSheets({
+        ...data,
+        scope,
+        manifest: data.manifest.filter((row) => fileNames.has(String(row.fileName ?? ''))),
+      }));
+      exportStage = 'save_file';
+      await downloadBlob(`pulselab-${scope}-${new Date().toISOString().slice(0, 10)}.xlsx`, blob);
+      setNotice(`已单独导出 ${scope === 'dcr' ? 'DCR' : 'GITT'} 结果和可直接作图数据。`);
+    } catch (error) {
+      setNotice(`${scope === 'dcr' ? 'DCR' : 'GITT'} 导出失败（${exportStage}）：${readableError(error, 'scoped_export_failed')}`);
     } finally {
       setBusyAction(null);
     }
@@ -1235,136 +1703,19 @@ function App() {
     if (isBusy || analysisPending || settingsPending || gittRecipePending || entries.length === 0) return;
     setBusyAction('export-project');
     setOperationStatus('正在生成项目汇总 XLSX…');
+    let exportStage = 'prepare';
     try {
       await nextPaint();
-      const overviewRows = entries.map((entry) => ({
-        fileName: entry.loaded.fileName,
-        analysisKind: entry.classification.analysisKind,
-        rowCount: entry.loaded.canonical.rows.length,
-        activeMassMg: entry.analysis?.activeMassProvenance?.activeMassG === null ||
-          entry.analysis?.activeMassProvenance?.activeMassG === undefined
-          ? entry.loaded.canonical.metadata.activeMassMg
-          : entry.analysis.activeMassProvenance.activeMassG * 1000,
-        activeMassSourceId: entry.analysis?.activeMassProvenance?.sourceId ?? null,
-        analysisState: entry.error
-          ? 'analysis_error'
-          : entry.analysis
-            ? 'analyzed'
-            : entry.classification.analysisKind === 'gitt' && !entry.recipePlan.readyToAnalyze
-              ? 'awaiting_recipe_confirmation'
-              : 'not_requested',
-        scientificValid: entry.analysis?.counts.valid ?? null,
-        scientificReview: entry.analysis?.counts.review ?? null,
-        scientificRejected: entry.analysis?.counts.rejected ?? null,
-        scientificNotComputable: entry.analysis?.counts.notComputable ?? null,
-        sourceFileHash: entry.loaded.canonical.sourceFileHash,
-      }));
-      const dcrRows = dcrModel.events.flatMap((event, eventIndex) => event.points.map((point) => ({
-        fileName: event.dataset.fileName,
-        eventOrder: eventIndex + 1,
-        metric: point.requestedMetric,
-        targetTimeS: point.requestedOffsetS,
-        productState: point.state,
-        resistanceOhm: point.reportedResistanceOhm,
-        calculationState: point.calculationState,
-        qcStatus: point.qcStatus,
-        qcCodes: point.qcCodes.join(' | '),
-        actualElapsedFromTransitionS: point.actualElapsedFromTransitionS,
-      })));
-      const gittRows = gittLiteratureProfiles.flatMap(({ entry, program, profile }) => {
-        const programEventByPulseId = new Map(program.events.map((event) => [event.sourcePulseId, event]));
-        const resultByPulseId = new Map(
-          (entry.analysis?.gittResults ?? []).map((result) => [result.pulseId, result]),
-        );
-        return profile.pulses.map((pulse) => {
-          const programEvent = programEventByPulseId.get(pulse.sourcePulseId) ?? null;
-          const result = resultByPulseId.get(pulse.sourcePulseId) ?? null;
-          return {
-            fileName: entry.loaded.fileName,
-            pulseOrder: pulse.sourceOrder,
-            actualPulseDurationS: programEvent?.actualPulseDurationS ?? null,
-            termination: programEvent?.termination ?? null,
-            postRestState: programEvent?.postRestState ?? null,
-            postRestDurationS: pulse.polarization.postRestDurationS,
-            sequenceClassification: pulse.eventClassification,
-            comparisonUse: pulse.comparativeUse,
-            whEndpointResultCm2PerS: result?.metricValueCm2PerS ?? null,
-            deltaEtV: result?.deltaEtV ?? null,
-            deltaEsV: result?.deltaEsV ?? null,
-            fitSlopeVPerSqrtS: result?.fitDiagnostics.slopeVPerSqrtS ?? null,
-            fitInterceptV: result?.fitDiagnostics.interceptV ?? null,
-            fitRSquared: result?.fitDiagnostics.rSquared ?? null,
-            absolutePulseEndPolarizationV: pulse.polarization.absolutePulseEndPolarizationV,
-            restEndPotentialShiftV: pulse.polarization.restEndPotentialShiftV,
-            pulseCapacityFraction: pulse.polarization.pulseCapacityFraction,
-            genericCalculationState: pulse.sourceGenericState.calculationState,
-            genericQcStatus: pulse.sourceGenericState.qcStatus,
-            genericQcCodes: pulse.sourceGenericState.qcCodes.join(' | '),
-            modelWarnings: pulse.modelWarnings.map((warning) => warning.code).join(' | '),
-            interpretation: 'CFx 1200 s model-limited comparative index; not intrinsic diffusivity',
-          };
-        });
-      });
-      const gittSummaryRows = gittLiteratureProfiles.map(({ entry, program, profile }) => ({
-        fileName: entry.loaded.fileName,
-        programProfileId: program.profile.profileId,
-        programRecognized: program.programRecognized,
-        timeLimitReachedCount: program.summary.timeLimitReachedCount,
-        stopVoltageTerminatedCount: program.summary.stopVoltageTerminatedCount,
-        retainedPulseCount: program.summary.retainedPulseCount,
-        excludedAfterFirstCutoffCount: program.summary.excludedAfterFirstCutoffCount,
-        firstCutoffSourcePulseId: program.summary.firstCutoffSourcePulseId,
-        mainComparativeSequenceCount: program.summary.mainComparativeSequenceCount,
-        fileEndTruncatedRestCount: program.summary.fileEndTruncatedRestCount,
-        medianDAppCandidateCm2PerS: profile.summary.medianDAppCandidateCm2PerS,
-        medianAbsolutePulseEndPolarizationV: profile.summary.medianAbsolutePulseEndPolarizationV,
-        genericSmallPerturbationExceededCount: profile.summary.genericSmallPerturbationExceededCount,
-        comparabilityGroupingKey: profile.comparabilityGroupingKey,
-        comparabilityBoundary: profile.comparabilityBoundary,
-      }));
-      const plotBundles = gittLiteratureProfiles.map(({ entry, program, profile }) => ({
-        fileName: entry.loaded.fileName,
-        bundle: buildGittPlotExportBundleV1(
-          rowsThroughFirstGittCutoff(entry.loaded.canonical.rows, program),
-          entry.analysis?.gittResults ?? [],
-          new Map(profile.pulses.map((pulse) => [pulse.sourcePulseId, pulse.sourceOrder])),
-        ),
-      }));
-      const gittFullTraceRows = plotBundles.flatMap(({ fileName, bundle }) =>
-        bundle.fullTraceRows.map((row) => ({ fileName, ...row })),
-      );
-      const gittPulseResponseRows = plotBundles.flatMap(({ fileName, bundle }) =>
-        bundle.pulseResponseRows.map((row) => ({ fileName, ...row })),
-      );
-      const gittSqrtFitRows = plotBundles.flatMap(({ fileName, bundle }) =>
-        bundle.sqrtFitRows.map((row) => ({ fileName, ...row })),
-      );
-      const gittWhVoltageRows = plotBundles.flatMap(({ fileName, bundle }) =>
-        bundle.whVoltageRows.map((row) => ({ fileName, ...row })),
-      );
+      exportStage = 'build_report_data';
       const { createXlsxWorkbook } = await import('./app/xlsx');
-      const blob = await createXlsxWorkbook([
-        { name: 'Project overview', columns: Object.keys(overviewRows[0] ?? { fileName: '' }), rows: overviewRows },
-        { name: 'DCR workbench', columns: Object.keys(dcrRows[0] ?? { fileName: '' }), rows: dcrRows },
-        { name: 'GITT CFx1200 events', columns: Object.keys(gittRows[0] ?? { fileName: '' }), rows: gittRows },
-        { name: 'GITT CFx1200 summary', columns: Object.keys(gittSummaryRows[0] ?? { fileName: '' }), rows: gittSummaryRows },
-        ...(gittFullTraceRows.length > 0
-          ? [{ name: 'GITT full trace', columns: Object.keys(gittFullTraceRows[0]), rows: gittFullTraceRows }]
-          : []),
-        ...(gittPulseResponseRows.length > 0
-          ? [{ name: 'GITT pulse response', columns: Object.keys(gittPulseResponseRows[0]), rows: gittPulseResponseRows }]
-          : []),
-        ...(gittSqrtFitRows.length > 0
-          ? [{ name: 'GITT sqrt fit', columns: Object.keys(gittSqrtFitRows[0]), rows: gittSqrtFitRows }]
-          : []),
-        ...(gittWhVoltageRows.length > 0
-          ? [{ name: 'GITT WH vs voltage', columns: Object.keys(gittWhVoltageRows[0]), rows: gittWhVoltageRows }]
-          : []),
-      ]);
-      downloadBlob(`pulselab-gitt-dcr-report-${new Date().toISOString().slice(0, 10)}.xlsx`, blob);
-      setNotice('已导出项目 XLSX：包含计算结果以及四组可直接作图的 GITT 数据。');
+      const data = buildReportData();
+      exportStage = 'build_xlsx';
+      const blob = await createXlsxWorkbook(buildReportSheets({ ...data, scope: 'project' }));
+      exportStage = 'save_file';
+      await downloadBlob(`pulselab-gitt-dcr-report-${new Date().toISOString().slice(0, 10)}.xlsx`, blob);
+      setNotice('已导出项目 XLSX：DCR、GITT 和各组可直接作图数据已分 Sheet 保存。');
     } catch (error) {
-      setNotice(`项目报告导出失败：${error instanceof Error ? error.message : 'project_export_failed'}`);
+      setNotice(`项目报告导出失败（${exportStage}）：${readableError(error, 'project_export_failed')}`);
     } finally {
       setBusyAction(null);
     }
@@ -1375,10 +1726,10 @@ function App() {
       return (
         <EmptyState
           title="导入测试数据，开始分析"
-          detail="导入后软件会自动识别 Neware 协议、在后台规范化并分析整批文件；不需要先填写不确定度或仪器分辨率。"
+          detail="导入后软件会自动识别 Neware NDAX 或 LAND CEX，在后台规范化并分析整批文件；不需要先填写不确定度或仪器分辨率。"
           action={(
             <button className="product-button product-button--primary" onClick={() => fileInputRef.current?.click()} disabled={isBusy}>
-              <FilePlus2 aria-hidden="true" />选择 NDAX 文件
+              <FilePlus2 aria-hidden="true" />选择 NDAX / CEX 文件
             </button>
           )}
         />
@@ -1454,7 +1805,7 @@ function App() {
 
         <section className="product-support-note">
           <Info aria-hidden="true" />
-          <p><strong>当前输入范围：</strong>Neware NDAX 直接读取；LAND 首版仅接受官方 CSV/XLSX 导出，暂不直接读取 CEX。</p>
+          <p><strong>当前输入范围：</strong>Neware NDAX 和 LAND CEX 均可直接读取；LAND CEX 的时间、电压码和原始电流码已与官方 LAND 结果对照，电流按已验证的代码比例进入计算。电压分辨率证据仍会使结果保留复核提示，但不再因电流分辨率缺失而没有 Endpoint 数值。</p>
         </section>
       </>
     );
@@ -1466,10 +1817,10 @@ function App() {
       return (
         <EmptyState
           title="还没有识别到 DCR 文件"
-          detail="导入包含 Rest → 单一恒流 Pulse 的 Neware DCR 程序后，这里会自动汇总首采样、5 s、10 s 和 30 s 的结果。"
+          detail="导入包含小电流放电 → 静置 → 大电流放电的 Neware NDAX 或 LAND CEX 后，这里按论文公式汇总两电流终止点 DCR。"
           action={(
             <button className="product-button product-button--primary" onClick={() => fileInputRef.current?.click()} disabled={isBusy}>
-              <FilePlus2 aria-hidden="true" />导入 NDAX
+              <FilePlus2 aria-hidden="true" />导入数据文件
             </button>
           )}
         />
@@ -1492,10 +1843,10 @@ function App() {
           <div>
             <span className="product-eyebrow">DCR WORKBENCH</span>
             <h2>在同一协议下看脉冲电阻，而不是翻文件</h2>
-            <p>默认显示 30 s。只要目标采样点存在就直接计算；采样和基线诊断作为附加提示展示。</p>
+            <p>按论文公式，取小电流和大电流放电阶段的终止电压计算差分 DCR。</p>
           </div>
-          <div className="product-metric-switcher" role="group" aria-label="选择 DCR 时间点">
-            {DCR_BATCH_STANDARD_POINT_SPECS_V1.map((spec) => (
+          <div className="product-metric-switcher" role="group" aria-label="选择 DCR 计算方法">
+            {[DCR_BATCH_DIFFERENTIAL_POINT_SPEC_V1].map((spec) => (
               <button
                 className={dcrMetric === spec.key ? 'is-active' : ''}
                 key={spec.key}
@@ -1511,7 +1862,7 @@ function App() {
         <section className="product-callout product-callout--information">
           <Info aria-hidden="true" />
           <div>
-            <strong>这是协议相关的直流脉冲表观电阻</strong>
+            <strong>这是论文公式的两电流终止点差分 DCR</strong>
             <p>电阻按对应时刻的实际 ΔV/ΔI 计算。缺少目标采样点时不插值；其他质量指标放入详情诊断。</p>
           </div>
         </section>
@@ -1551,9 +1902,9 @@ function App() {
           <BatchTrendPlot
             points={dcrTrendPoints}
             ariaLabel={`${selectedMetricSpec.displayLabel} DCR 批量预览趋势`}
-            xLabel="同一文件内的脉冲次序"
-            yLabel="电阻 / Ω"
-            formatX={(value) => `脉冲 ${Math.round(value)}`}
+            xLabel="Cycle / #"
+            yLabel="DCR / Ω"
+            formatX={(value) => `${Math.round(value)}`}
             formatY={formatResistance}
             selectedId={auditFocus?.eventKey ? `${auditFocus.eventKey}:${auditFocus.metricKey}` : null}
             onPointClick={(point) => {
@@ -1613,10 +1964,10 @@ function App() {
       return (
         <EmptyState
           title="还没有识别到 GITT 文件"
-          detail="导入 Neware CFₓ / FGS GITT 文件后，软件会从同一份 NDAX 程序自动识别 1200 s 上限、1.5 V 截止和 4 h 静置。"
+          detail="导入 Neware 或 LAND 的 CFₓ / FGS GITT 文件后，软件会按已识别的阶段序列分析；Neware 程序继续使用 1200 s 上限、1.5 V 截止和 4 h 静置语义。"
           action={(
             <button className="product-button product-button--primary" onClick={() => fileInputRef.current?.click()} disabled={isBusy}>
-              <FilePlus2 aria-hidden="true" />导入 NDAX
+              <FilePlus2 aria-hidden="true" />导入数据文件
             </button>
           )}
         />
@@ -1630,7 +1981,7 @@ function App() {
             <div>
               <span className="product-eyebrow">CFₓ / FGS LITERATURE GITT</span>
               <h2>确认用于计算的实验参数，再开始分析</h2>
-              <p>软件会预填 NDAX 证据和材料默认值；你可以修改极片几何、活性质量、密度和摩尔质量。</p>
+              <p>软件会预填文件证据和材料默认值；你可以修改极片几何、活性质量、密度和摩尔质量。</p>
             </div>
           </section>
           {renderGittRecipeSetup()}
@@ -1655,13 +2006,15 @@ function App() {
     const singleFaceAreaCm2 = entry.analysis?.gittResults.find(
       (result) => result.singleFaceAreaCm2 !== null,
     )?.singleFaceAreaCm2 ?? resolvedGittSettings?.recipeElectrodeAreaCm2 ?? null;
-    const programEventByPulseId = new Map(program.events.map((event) => [event.sourcePulseId, event]));
+    const programEventByPulseId = new Map(program.allEvents.map((event) => [event.sourcePulseId, event]));
     const resultByPulseId = new Map(
       (entry.analysis?.gittResults ?? []).map((result) => [result.pulseId, result]),
     );
-    const primaryProgram = program.events[0]?.program ?? null;
+    const primaryProgram = program.allEvents[0]?.program ?? null;
     const diagnosticProfilePulse = profile.pulses.find(
       (pulse) => pulse.sourcePulseId === selectedGittPulseId,
+    ) ?? profile.pulses.find(
+      (pulse) => pulse.eventClassification === 'complete_1200s_standard_rest' && pulse.sourceOrder > 1,
     ) ?? profile.pulses.find(
       (pulse) => pulse.eventClassification === 'complete_1200s_standard_rest',
     ) ?? profile.pulses[0] ?? null;
@@ -1675,7 +2028,7 @@ function App() {
       : buildGittPulsePlotModelV1(entry.loaded.canonical.rows, diagnosticResult);
     const visibleProfilePulses = profile.pulses.filter((pulse) => {
       if (gittEventFilter === 'main') {
-        return pulse.eventClassification === 'complete_1200s_standard_rest';
+        return isCfxDisplayComparisonPointEligible(pulse);
       }
       if (gittEventFilter === 'cutoff') return pulse.eventClassification === 'excluded_cutoff_early';
       if (gittEventFilter === 'rest') {
@@ -1689,8 +2042,8 @@ function App() {
         <section className="product-page-header">
           <div>
             <span className="product-eyebrow">CFₓ / FGS LITERATURE GITT</span>
-            <h2>导入文件、确认参数，直接得到手算法结果与论文图</h2>
-            <p>软件自动读取脉冲、截止和静置工步；主值按端点公式计算，√t 回归只作为辅助图。</p>
+              <h2>导入文件、确认参数，直接得到手算法结果与作图数据</h2>
+              <p>软件自动读取脉冲、截止和静置工步；主值按端点公式计算，τ¹ᐟ²–电压图保留去掉 loaded t=0 后的原始点，不在图中预拟合。</p>
           </div>
           <label className="product-select-field">
             <span>当前文件</span>
@@ -1711,15 +2064,16 @@ function App() {
             <span className="product-eyebrow">AUTO-READ PROGRAM</span>
             <h3>{program.programRecognized ? profile.headline : '未能从该文件确认 CFₓ 1200 s 程序语义'}</h3>
             <p>{program.programRecognized
-              ? '达到时间上限并完成标准静置的脉冲直接进入主结果；触及 1.5 V 后提前结束的工步单独标记，不混入 1200 s 序列。'
+              ? '达到时间上限并完成标准静置的脉冲进入主结果；首次触及 1.5 V 后的协议截止和后续循环单独标记，保留用于审计与导出。'
               : '该文件仍可查看原始曲线，但在工步语义确认前不会自动生成 1200 s 结果序列。'}</p>
           </div>
         </section>
 
         <section className="product-kpi-row" aria-label="CFx 文献 GITT 摘要">
-          <div><strong>{program.summary.mainComparativeSequenceCount}</strong><span>完整 1200 s 主序列</span></div>
+          <div><strong>{profile.summary.displayComparisonIncludedCount}</strong><span>主图比较点</span></div>
           <div><strong>{program.summary.stopVoltageTerminatedCount}</strong><span>首次 1.5 V 截止脉冲</span></div>
-          <div><strong>{program.summary.excludedAfterFirstCutoffCount}</strong><span>截止后已排除脉冲</span></div>
+          <div><strong>{program.summary.postProtocolCutoffEventCount}</strong><span>截止后保留审计脉冲</span></div>
+          <div><strong>{profile.summary.comparisonTargetMedianExcludedCount}</strong><span>低于中值电压比较目标</span></div>
           <div><strong>{formatScientific(profile.summary.medianDAppCandidateCm2PerS)}</strong><span>中位 WH 手算法结果 / cm²·s⁻¹</span></div>
           <div><strong>{formatPotential(profile.summary.medianAbsolutePulseEndPolarizationV)}</strong><span>中位末端极化绝对值</span></div>
         </section>
@@ -1728,7 +2082,18 @@ function App() {
           <div>
             <div className="product-section-heading">
               <div><span className="product-eyebrow">FULL GITT PROFILE</span><h3>完整电压–时间曲线</h3></div>
-              <span>已分析的 CFₓ / FGS 文件叠加</span>
+              <div className="product-section-heading__actions">
+                <button
+                  type="button"
+                  className="product-button product-button--secondary"
+                  onClick={() => setGittShowAllFiles((current) => !current)}
+                  aria-pressed={gittShowAllFiles}
+                  title="切换完整电压–时间曲线的文件范围"
+                >
+                  {gittShowAllFiles ? '仅显示当前文件' : '显示全部文件'}
+                </button>
+                <span>{gittShowAllFiles ? '已分析文件叠加' : '当前文件；时间从 0 min 开始'}</span>
+              </div>
             </div>
             <BatchTrendPlot
               points={gittOverviewPoints}
@@ -1741,7 +2106,7 @@ function App() {
               showMarkers={false}
               emptyMessage="没有可绘制的完整 GITT 电压时间记录。"
             />
-            <p className="product-insight product-insight--information">总览图只复现原始电压轨迹；材料、质量与几何是否可比较仍以右侧参数和 Manifest 为准。</p>
+            <p className="product-insight product-insight--information">总览图按原始文件分别从 0 min 复现电压轨迹，不把多个文件拼接；材料、质量与几何是否可比较仍以右侧参数和 Manifest 为准。</p>
           </div>
           <aside className="product-assumption-panel">
             <span className="product-eyebrow">AUDITED ANALYSIS INPUTS</span>
@@ -1766,7 +2131,7 @@ function App() {
           <Info aria-hidden="true" />
           <div>
             <strong>当前主算法与手算表一致</strong>
-            <p>D = 4/(πτ) × (nₘVₘ/S)² × (ΔEs/ΔEₜ)²；ΔEₜ使用首个正时间负载采样点到脉冲末端。序列在首次程序确认的约 1.5 V 截止脉冲及其后静置处结束，后续循环全部排除。</p>
+            <p>D = 4/(πτ) × (nₘVₘ/S)² × (ΔEs/ΔEₜ)²；ΔEₜ使用 pulse 内真实 loaded t=0 点到脉冲末端，first-positive 点仅保留作早期响应诊断。真实 1.5 V 是协议终端截止；主图另按 comparisonTargetMedianVoltageV = 1.5 V 筛选中值电压。被主图排除的结果仍保留在 Summary、详情和导出中。</p>
           </div>
         </section>
 
@@ -1794,16 +2159,41 @@ function App() {
 
         <section className="product-section">
           <div className="product-section-heading">
-            <div><span className="product-eyebrow">WH RESULT — VOLTAGE</span><h3>WH 手算法结果–静置末端电压</h3></div>
-            <span>纵轴 log₁₀；横轴按高电压到低电压排列</span>
+            <div><span className="product-eyebrow">WH RESULT — VOLTAGE</span><h3>WH 手算法结果–放电中值电压</h3></div>
+            <div className="product-section-heading__actions">
+              <button
+                type="button"
+                className="product-button product-button--secondary"
+                onClick={() => setGittShowAllFiles((current) => !current)}
+                aria-pressed={gittShowAllFiles}
+                title="切换电压–Dli图的文件范围"
+              >
+                {gittShowAllFiles ? '仅显示当前文件' : '显示全部文件'}
+              </button>
+              <span>{gittShowAllFiles ? '各文件按脉冲顺序分别连线' : '当前文件；按脉冲顺序连线'}</span>
+            </div>
+            <div className="product-section-heading__actions">
+              <button
+                type="button"
+                className="product-button product-button--secondary"
+                onClick={() => setGittVoltageMetricReverseY((current) => !current)}
+                aria-pressed={gittVoltageMetricReverseY}
+                title="切换 Dli 纵轴刻度方向"
+              >
+                {gittVoltageMetricReverseY ? '恢复常规 Y 轴' : '翻转 Y 轴'}
+              </button>
+              <span>正式 WH Endpoint；纵轴 log₁₀；D_Li 刻度{gittVoltageMetricReverseY ? '由低到高' : '由高到低'}；横轴按高电压到低电压排列</span>
+            </div>
           </div>
           <BatchTrendPlot
-            points={gittVoltageMetricPoints}
-            ariaLabel="CFx 与 FGS 的 WH 手算法结果对静置末端电压图"
-            xLabel="Epost / V"
-            yLabel="WH result / cm²·s⁻¹"
+              points={gittVoltageMetricPoints}
+              ariaLabel="CFx 与 FGS 的 WH 手算法结果对放电中值电压图"
+            xLabel="Voltage / V"
+            yLabel="D_Li / cm²·s⁻¹"
             yScale="log10"
             reverseX
+            reverseY={gittVoltageMetricReverseY}
+            showLines
             markerColorMode="series"
             selectedId={diagnosticProfilePulse?.sourcePulseId ?? null}
             formatX={(value) => `${formatNumber(value, 5)} V`}
@@ -1814,9 +2204,9 @@ function App() {
               );
               if (owner) selectGittDiagnostic(owner.entry.loaded.id, point.id);
             }}
-            emptyMessage="当前已分析文件中没有达到完整 1200 s 主序列且可计算的 WH 手算法结果。"
+            emptyMessage="当前已分析文件中没有满足协议、方向和中值电压比较目标的 WH 手算法结果。"
           />
-          <p className="product-insight product-insight--information">点击数据点可切换上方单脉冲图。CFₓ结果按同一公式完整输出，但名称保持“表观比较结果”，不宣称为本征固相扩散系数。</p>
+          <p className="product-insight product-insight--information">点击数据点可切换上方单脉冲图。主图只显示 ΔEs 与 ΔEt 方向一致的可比较点；方向冲突点仍保留在逐脉冲结果和导出表中。CFₓ结果按同一公式完整输出，但名称保持“表观比较结果”，不宣称为本征固相扩散系数。</p>
         </section>
 
         <section className="product-section">
@@ -1824,7 +2214,7 @@ function App() {
             <div><span className="product-eyebrow">EXECUTED EVENTS</span><h3>逐脉冲文件适配结果</h3></div>
             <div className="product-filter-group" role="group" aria-label="筛选 CFx GITT 工步事件">
               {([
-                ['main', `主序列 ${program.summary.mainComparativeSequenceCount}`],
+                ['main', `主序列 ${profile.summary.displayComparisonIncludedCount}`],
                 ['cutoff', `截止早停 ${program.summary.stopVoltageTerminatedCount}`],
                 ['rest', `静置截断 ${program.summary.noncompletedRestCount}`],
                 ['all', `全部 ${profile.pulses.length}`],
@@ -1842,7 +2232,7 @@ function App() {
           </div>
           <div className="product-table-wrap" role="region" aria-label="CFx GITT 脉冲适配结果" tabIndex={0}>
             <table className="product-table">
-              <thead><tr><th>脉冲</th><th>实际时长</th><th>工步结束原因</th><th>后静置</th><th>序列归属</th><th>WH 手算法结果</th><th>|ΔEₜ|</th><th>辅助拟合 R²</th></tr></thead>
+              <thead><tr><th>脉冲</th><th>实际时长</th><th>中值电压</th><th>工步结束原因</th><th>后静置</th><th>协议状态</th><th>Endpoint资格</th><th>中值电压比较资格</th><th>WH 手算法结果</th><th>|ΔEₜ|</th><th>辅助拟合 R²</th></tr></thead>
               <tbody>
                 {visibleProfilePulses.map((pulse) => {
                   const programEvent = programEventByPulseId.get(pulse.sourcePulseId) ?? null;
@@ -1862,9 +2252,12 @@ function App() {
                   }}>
                     <td>#{pulse.sourceOrder}</td>
                     <td>{formatSeconds(programEvent?.actualPulseDurationS ?? null)}</td>
+                    <td>{formatPotential(pulse.medianVoltageV)}</td>
                     <td>{newareTerminationLabel(programEvent?.termination)}</td>
                     <td>{newareRestLabel(programEvent?.postRestState)}</td>
                     <td><span className={`product-state product-state--${cfxGittEventTone(pulse.eventClassification)}`}>{cfxGittEventLabel(pulse.eventClassification)}</span></td>
+                    <td>{pulse.primaryComparisonEligibility}</td>
+                    <td>{cfxDisplayEligibilityLabel(pulse.displayComparisonEligibility)}</td>
                     <td className="product-table__number">{formatScientific(pulse.transportComparison.dAppCandidateCm2PerS)}</td>
                     <td>{formatPotential(pulse.polarization.absolutePulseEndPolarizationV)}</td>
                     <td>{result?.fitDiagnostics.rSquared === null || result?.fitDiagnostics.rSquared === undefined ? '—' : result.fitDiagnostics.rSquared.toFixed(5)}</td>
@@ -1889,10 +2282,20 @@ function App() {
             <h2>先导出结论，再附上审计证据</h2>
             <p>项目汇总把 DCR 工作台与 CFₓ 1200 s 文献口径 GITT 分开保存；单文件审计附件仍可从详情抽屉导出。</p>
           </div>
-          <button className="product-button product-button--primary" onClick={() => void exportProjectWorkbook()} disabled={!hasAnyResult || isBusy || analysisPending || settingsPending || gittRecipePending}>
-            {busyAction === 'export-project' ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
-            导出项目 XLSX
-          </button>
+          <div className="product-section-heading__actions">
+            <button className="product-button product-button--secondary" onClick={() => void exportScopedWorkbook('dcr')} disabled={dcrModel.counts.eventCount === 0 || isBusy || analysisPending || settingsPending || gittRecipePending}>
+              {busyAction === 'export-dcr' ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
+              单独导出 DCR
+            </button>
+            <button className="product-button product-button--secondary" onClick={() => void exportScopedWorkbook('gitt')} disabled={gittLiteratureProfiles.length === 0 || isBusy || analysisPending || settingsPending || gittRecipePending}>
+              {busyAction === 'export-gitt' ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
+              单独导出 GITT
+            </button>
+            <button className="product-button product-button--primary" onClick={() => void exportProjectWorkbook()} disabled={!hasAnyResult || isBusy || analysisPending || settingsPending || gittRecipePending}>
+              {busyAction === 'export-project' ? <LoaderCircle className="spinner" aria-hidden="true" /> : <Download aria-hidden="true" />}
+              导出项目 XLSX
+            </button>
+          </div>
         </section>
         {analysisPending && (
           <section className="product-callout product-callout--information"><LoaderCircle className="spinner" aria-hidden="true" /><div><strong>正在等待 {pendingCount} 个文件完成分析</strong><p>为了避免把半批数据导出为完整报告，项目汇总导出暂时锁定。</p></div></section>
@@ -1904,12 +2307,12 @@ function App() {
           <article>
             <span className="product-eyebrow">DCR REPORT</span>
             <h3>{dcrModel.counts.eventCount} 个脉冲事件</h3>
-            <p>包含首采样、5 s、10 s、30 s 的直接计算值、实际采样时间和诊断提示。</p>
+            <p>包含小电流和大电流放电阶段终止电压、对应电流以及差分 DCR 结果和诊断提示。</p>
           </article>
           <article>
             <span className="product-eyebrow">GITT REPORT</span>
             <h3>{gittLiteratureProfiles.reduce((sum, item) => sum + item.profile.summary.submittedPulseCount, 0)} 个已执行脉冲</h3>
-            <p>CFₓ 部分导出 1200 s 主序列、1.5 V 截止早停、静置完成度、端点手算法结果和辅助拟合参数。</p>
+            <p>CFₓ 部分只导出三组可直接作图数据：完整时间–电压、去掉 loaded t=0 后的 τ¹ᐟ²–电压原始点、中值电压–正式 D_Li。</p>
           </article>
           <article>
             <span className="product-eyebrow">AUDIT ATTACHMENT</span>
@@ -1947,7 +2350,7 @@ function App() {
           })}
         </nav>
         <div className="product-topbar__actions">
-          <input ref={fileInputRef} className="sr-only" type="file" accept=".ndax" multiple disabled={isBusy} tabIndex={-1} onChange={(event) => void importFiles(event.target.files)} />
+          <input ref={fileInputRef} className="sr-only" type="file" accept=".ndax,.cex" multiple disabled={isBusy} tabIndex={-1} onChange={(event) => void importFiles(event.target.files)} />
           <input ref={projectInputRef} className="sr-only" type="file" accept=".json,.gittdcr" disabled={isBusy} tabIndex={-1} onChange={(event) => void openProject(event.target.files)} />
           <button className="product-icon-button" onClick={() => projectInputRef.current?.click()} aria-label="打开项目" title="打开项目" disabled={isBusy}><FolderOpen aria-hidden="true" /></button>
           <button className="product-icon-button" onClick={() => void saveProject()} aria-label="保存项目" title="保存项目" disabled={datasets.length === 0 || isBusy}><Save aria-hidden="true" /></button>
@@ -2011,14 +2414,25 @@ function App() {
                     <div><dt>后静置</dt><dd>{newareRestLabel(focusedGittLiteratureEvent?.programEvent?.postRestState)}</dd></div>
                     <div><dt>CFₓ 序列归属</dt><dd>{focusedGittLiteratureEvent?.profilePulse ? cfxGittEventLabel(focusedGittLiteratureEvent.profilePulse.eventClassification) : '—'}</dd></div>
                     <div><dt>WH 手算法结果</dt><dd>{formatScientific(focusedGittResult.metricValueCm2PerS)}</dd></div>
+                    <div><dt>Pulse t=0（loaded）</dt><dd>{formatPotential(focusedGittResult.pulseT0VoltageV)}</dd></div>
+                    <div><dt>Pulse end</dt><dd>{formatPotential(focusedGittResult.pulseEndVoltageV)}</dd></div>
                     <div><dt>ΔEₜ</dt><dd>{formatPotential(focusedGittResult.deltaEtV)}</dd></div>
                     <div><dt>ΔEs</dt><dd>{formatPotential(focusedGittResult.deltaEsV)}</dd></div>
                     <div><dt>辅助拟合 R²</dt><dd>{focusedGittResult.fitDiagnostics.rSquared?.toFixed(5) ?? '—'}</dd></div>
                     <div><dt>模型适用性</dt><dd>{focusedGittResult.modelApplicability}</dd></div>
                     <div><dt>解释范围</dt><dd>{focusedGittResult.interpretationScope}</dd></div>
-                    <div><dt>诊断状态</dt><dd>{focusedGittResult.qcStatus ?? '—'}</dd></div>
+                    <div><dt>Endpoint QC</dt><dd>{focusedGittResult.primaryEndpointQcStatus}</dd></div>
+                    <div><dt>CFx10s QC</dt><dd>{focusedGittResult.cfx10SlopeQcStatus}</dd></div>
+                    <div><dt>主比较资格</dt><dd>{focusedGittLiteratureEvent?.profilePulse?.primaryComparisonEligibility ?? focusedGittResult.primaryComparisonEligibility}</dd></div>
+                    <div><dt>兼容 qcStatus</dt><dd>{focusedGittResult.qcStatus ?? '—'}</dd></div>
                   </dl>
                   {focusedGittResult.qcCodes.length > 0 && <code>{focusedGittResult.qcCodes.join(' · ')}</code>}
+                  {(focusedGittResult.primaryEndpointQcReasons.length > 0 || focusedGittResult.cfx10SlopeQcReasons.length > 0) && (
+                    <details className="product-audit-details">
+                      <summary>查看 QC 原因、值和阈值</summary>
+                      <code>{JSON.stringify([...focusedGittResult.primaryEndpointQcReasons, ...focusedGittResult.cfx10SlopeQcReasons], null, 2)}</code>
+                    </details>
+                  )}
                 </section>
               )}
 

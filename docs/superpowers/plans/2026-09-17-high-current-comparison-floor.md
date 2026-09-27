@@ -14,7 +14,7 @@
 - 协议 cutoff 仍是原始 CanonicalRow 第一次满足 `voltageV <= stopVoltageV + existingCutoffToleranceV` 的记录。
 - 高倍率主图下限固定为 `medianVoltageV >= 1.5 V`；它是显示/比较下限，不是协议截止电压。
 - `medianVoltageV < 1.5 V` 的结果不删除，保留在 GITT Summary、audit、pulse detail 和正式导出。
-- 协议 cutoff 后的事件不伪装成标准完整 GITT 事件；高倍率数据可保留其已计算结果用于审计/detail/export，但不进入主 D_app–Voltage 图。
+- 协议 cutoff 后的事件不伪装成标准完整 GITT 事件；高倍率数据若 4 h 静置完成且中值电压不低于 1.5 V，可进入高倍率主 D_app–Voltage 图，否则保留用于审计/detail/export。
 - `<500 mA·g⁻¹` 不启用中值电压下限，继续使用现有规则。
 - 不修改 Endpoint、ΔEt、ΔEs、WH、DCR、CFx_10s、回归窗口、几何、质量、pulse duration 或 Stop_Volt 解析。
 - 不使用文件名、绝对通道电流、XLSX 聚合值或 UI 自行重新计算边界。
@@ -89,7 +89,7 @@ expect(result.summary.highRateMedianFloorExcludedCount).toBe(1);
 
 - [ ] **Step 4: 写分析管线的失败测试**
 
-在 `src/app/analyze.recipe.integration.test.ts` 加入一个高倍率 fixture：原始第一次 Stop_Volt cutoff 后仍有两个可识别 pulse。断言分析结果保留这些 pulse，但主比较资格为排除：
+在 `src/app/analyze.recipe.integration.test.ts` 加入一个高倍率 fixture：原始第一次 Stop_Volt cutoff 后仍有两个可识别 pulse。断言分析结果保留这些 pulse；4 h 静置完成且中值电压不低于下限的 pulse 进入高倍率主图，低于下限的 pulse 排除：
 
 ```ts
 expect(recipeAnalysis.gittResults).toHaveLength(4);
@@ -97,7 +97,7 @@ expect(recipeAnalysis.cfxLiterature1200s?.comparativeProfile.pulses).toHaveLengt
 expect(recipeAnalysis.cfxLiterature1200s?.comparativeProfile.pulses.at(-1)?.sequenceClassification)
   .toBe('post_protocol_cutoff');
 expect(recipeAnalysis.cfxLiterature1200s?.comparativeProfile.pulses.at(-1)?.displayComparisonEligibility)
-  .toBe('excluded_protocol_cutoff');
+  .toBe('included');
 ```
 
 - [ ] **Step 5: 运行测试确认正确失败**
@@ -261,9 +261,7 @@ const passesMedianFloor = !highRateMode ||
   (finite(pulse.medianVoltageV) &&
     pulse.medianVoltageV >= HIGH_RATE_MEDIAN_VOLTAGE_FLOOR_V);
 const displayComparisonEligibility =
-  eventClassification === 'post_protocol_cutoff'
-    ? 'excluded_protocol_cutoff'
-    : !isStandardComplete || pulse.calculationState !== 'computed'
+  !protocolDisplayEligible || pulse.calculationState !== 'computed'
       ? 'excluded_not_computable'
       : primaryEndpointQcStatus === 'rejected'
         ? 'excluded_qc'
@@ -272,7 +270,7 @@ const displayComparisonEligibility =
           : 'included';
 ```
 
-主图下限只用这个新字段。`medianVoltageV` 不进入 Endpoint/WH 重新计算；`transportComparison.dAppCandidateCm2PerS` 继续读取已有 `diagnosticCandidateMetricValueCm2PerS`，以便低于中值下限的点仍可导出审计。对 `post_protocol_cutoff` 事件增加独立的 `auditDAppCandidateCm2PerS` 字段，直接保留已有数值但不改变其主比较资格。
+主图下限只用这个新字段。`medianVoltageV` 不进入 Endpoint/WH 重新计算；`transportComparison.dAppCandidateCm2PerS` 继续读取已有 `diagnosticCandidateMetricValueCm2PerS`，以便低于中值下限的点仍可导出审计。对符合高倍率主图规则的 `post_protocol_cutoff` 事件，主图和作图导出也读取同一已有数值。
 
 - [ ] **Step 4: 补充状态显示**
 
@@ -288,7 +286,7 @@ npm test -- --run src/product/cfx/literature1200sGittProfile.test.ts
 
 预期：标准事件原有数值和统计不变；高倍率 `medianVoltageV < 1.5` 的 pulse 有数值、有审计状态，但 display eligibility 为排除。
 
-### Task 4: 让高倍率数据进入审计/detail/export，但不污染主图
+### Task 4: 让高倍率数据进入主图、审计/detail/export，并保持协议状态可追溯
 
 **Files:**
 - Modify: `src/app/analyze.ts`
@@ -357,7 +355,7 @@ export function isMainCfxComparisonPoint(
 }
 ```
 
-`App.tsx` 的 `gittVoltageMetricPoints` 和 `gittMedianDli` 只通过这个 helper 生成主比较点，不再直接判断 `eventClassification === 'complete_1200s_standard_rest'`。主图不会显示 `excluded_high_rate_median_floor` 或 `post_protocol_cutoff`。
+`App.tsx` 的 `gittVoltageMetricPoints` 和 `gittMedianDli` 只通过这个 helper 生成主比较点，不再直接判断 `eventClassification === 'complete_1200s_standard_rest'`。主图不会显示低于中值下限或不可计算的点；符合高倍率规则的 `post_protocol_cutoff` 点可以显示。
 
 - [ ] **Step 4: 保留 Summary、audit、pulse detail 和 export 记录**
 

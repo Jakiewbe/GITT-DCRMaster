@@ -46,11 +46,13 @@ function result(
   pulseStep: string,
   durationS: number,
   endVoltageV: number,
+  medianVoltageV: number | null = null,
 ): GittResultV1 {
   return {
     pulseId: `${sourceFileHash}:gitt:${pulseStep}`,
     pulseDurationS: durationS,
     pulseEndVoltageV: endVoltageV,
+    medianVoltageV,
   } as GittResultV1;
 }
 
@@ -109,6 +111,23 @@ function dataset(restEndS: number): NewareCanonicalDataset {
   };
 }
 
+function datasetWithUnstoppedCutoffCycle(): NewareCanonicalDataset {
+  const base = dataset(14_400);
+  return {
+    ...base,
+    rows: [
+      ...base.rows.slice(0, 3),
+      row('pulse', '2', 'discharge', 600, 1.49),
+      ...base.rows.slice(3),
+      row('pre-2', '1', 'rest', 0, 2.0),
+      row('pulse-2', '2', 'discharge', 0, 2.0),
+      row('pulse-2', '2', 'discharge', 1200, 1.3),
+      row('post-2', '3', 'rest', 0, 1.3),
+      row('post-2', '3', 'rest', 14_400, 1.4),
+    ],
+  };
+}
+
 describe('Neware CFx 1200 s program-semantic profile', () => {
   it('counts a 1200.1 s controller overrun as reaching the time limit', () => {
     const analysis = buildNewareCfxGitt1200sProfile(dataset(14_400), [
@@ -155,5 +174,50 @@ describe('Neware CFx 1200 s program-semantic profile', () => {
       isMainComparativeSequenceEvent: false,
     });
     expect(analysis.summary.fileEndTruncatedRestCount).toBe(1);
+  });
+
+  it('stops the valid event sequence at the first near-cutoff point even when the channel runs the full pulse', () => {
+    const analysis = buildNewareCfxGitt1200sProfile(datasetWithUnstoppedCutoffCycle(), [
+      result('pulse', 1200.1, 2),
+      result('pulse-2', 1200.1, 1.3),
+    ]);
+
+    expect(analysis.events).toHaveLength(1);
+    expect(analysis.events[0]).toMatchObject({
+      sourcePulseId: `${sourceFileHash}:gitt:pulse`,
+      termination: 'stop_voltage_terminated',
+      firstNearCutoffRowId: 'pulse:600',
+      firstNearCutoffVoltageV: 1.49,
+      firstNearCutoffElapsedS: 600,
+    });
+    expect(analysis.summary).toMatchObject({
+      submittedPulseCount: 2,
+      retainedPulseCount: 1,
+      excludedAfterFirstCutoffCount: 1,
+      firstCutoffSourcePulseId: `${sourceFileHash}:gitt:pulse`,
+    });
+    expect(analysis.allEvents).toHaveLength(2);
+    expect(analysis.allEvents.map((event) => event.sourcePulseId)).toEqual([
+      `${sourceFileHash}:gitt:pulse`,
+      `${sourceFileHash}:gitt:pulse-2`,
+    ]);
+    expect(analysis.allEvents[1]).toMatchObject({
+      isPostProtocolCutoff: true,
+      pulseMedianVoltageV: null,
+    });
+  });
+
+  it('retains the pulse median voltage as a separate event field without changing protocol cutoff', () => {
+    const analysis = buildNewareCfxGitt1200sProfile(datasetWithUnstoppedCutoffCycle(), [
+      result('pulse', 1200.1, 2, 1.8),
+      result('pulse-2', 1200.1, 1.3, 1.499),
+    ]);
+
+    expect(analysis.events).toHaveLength(1);
+    expect(analysis.events[0]).toMatchObject({
+      termination: 'stop_voltage_terminated',
+      pulseMedianVoltageV: 1.8,
+      isPostProtocolCutoff: false,
+    });
   });
 });

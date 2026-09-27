@@ -205,12 +205,12 @@
       "slopeVPerSqrtS": 0.01128379167095508,
       "interceptV": 3.0050000000000003,
       "rSquared": 1,
-      "metricValueCm2PerS": 1.2345679012345694e-10,
+      "metricValueCm2PerS": 1.0000000000000004e-10,
       "predictedDeltaEAtTauV": 0.11283791670955079,
-      "observedDeltaEAtTauV": 0.10155412503859607,
-      "endpointConsistencyRelativeError": 0.09999999999999686,
-      "dimensionlessPulseTime": 0.049382716049382776,
-      "dimensionlessFitTime": 0.012345679012345694
+      "observedDeltaEAtTauV": 0.11283791670955123,
+      "endpointConsistencyRelativeError": 3.9356381507216576e-15,
+      "dimensionlessPulseTime": 0.040000000000000015,
+      "dimensionlessFitTime": 0.010000000000000004
     },
     "dcr": {
       "DCR_first_sample": {

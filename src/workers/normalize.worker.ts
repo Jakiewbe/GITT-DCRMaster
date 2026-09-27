@@ -1,3 +1,4 @@
+import { normalizeLandCex } from '../adapters/land/cex';
 import { normalizeNewareNdax } from '../adapters/neware/normalize';
 import type {
   NormalizeWorkerRequest,
@@ -13,7 +14,9 @@ self.onmessage = async (event: MessageEvent<NormalizeWorkerRequest>) => {
   try {
     workerScope.postMessage({
       requestId,
-      canonical: await normalizeNewareNdax(bytes, fileName),
+      canonical: await (fileName.toLowerCase().endsWith('.cex')
+        ? normalizeLandCex(bytes, fileName)
+        : normalizeNewareNdax(bytes, fileName)),
       error: null,
     });
   } catch (error) {

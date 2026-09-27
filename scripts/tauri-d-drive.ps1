@@ -159,6 +159,16 @@ function Import-MsvcEnvironment {
     Write-Host "MSVC linker:       $($linker.Source)"
 }
 
+function Get-Sha256Hex([string]$path) {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($path)
+        return ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 Import-MsvcEnvironment
 
 $tauriCli = Join-Path $repoRoot 'node_modules\.bin\tauri.cmd'
@@ -221,8 +231,7 @@ if ($Action -eq 'build') {
         Write-Host "Release artifacts:  $versionArtifacts"
         Get-ChildItem -LiteralPath $versionArtifacts -File |
             ForEach-Object {
-                $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
-                Write-Host ("SHA-256 {0}  {1}" -f $hash.Hash.ToLowerInvariant(), $_.FullName)
+                Write-Host ("SHA-256 {0}  {1}" -f (Get-Sha256Hex $_.FullName), $_.FullName)
             }
     }
 }

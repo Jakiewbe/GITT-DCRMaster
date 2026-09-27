@@ -14,15 +14,29 @@ import {
   maximumResolutionSeconds,
   type TimedPulsePoint,
 } from './aggregation';
-import { selectFitWindow } from './fit';
+import {
+  DEFAULT_GITT_REGRESSION_WINDOWS,
+  evaluateRegressionWindow,
+  selectFitWindow,
+} from './fit';
 import { analyzeEquivalentGeometry } from './geometry';
+import { calculateMedianVoltageV } from './medianVoltage';
+import {
+  calculateLog10DRange,
+} from './regressionMetric';
+import { findLoadedPulseT0Point } from './endpoint';
 import {
   boundedStatus,
   GITT_QC_POLICY_V1 as POLICY,
   lowerBoundStatus,
   upperBoundStatus,
 } from './policy';
+import {
+  assessCfx10sQuality,
+  assessPrimaryEndpointQuality,
+} from './qcModel';
 import { diagnoseRest } from './rest';
+import { buildRestEndSensitivityAudit } from './restSensitivity';
 
 const SENSITIVITIES = {
   mass: 2,
@@ -35,6 +49,35 @@ const SENSITIVITIES = {
 
 function finite(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
+}
+
+function calculateEndpointD(
+  lengthCm: number | null,
+  pulseDurationS: number | null,
+  deltaEsV: number | null,
+  deltaEtV: number | null,
+): number | null {
+  if (
+    !finite(lengthCm) ||
+    !finite(pulseDurationS) ||
+    pulseDurationS <= 0 ||
+    !finite(deltaEsV) ||
+    !finite(deltaEtV) ||
+    deltaEtV === 0
+  ) {
+    return null;
+  }
+  const value =
+    (4 / (Math.PI * pulseDurationS)) *
+    lengthCm ** 2 *
+    (deltaEsV / deltaEtV) ** 2;
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function lastObservedRestVoltage(rows: GittPulseInputV1['preRestRows']): number | null {
+  const timeline = buildPulseTimeline(aggregateUniqueTicks(rows));
+  const point = timeline.at(-1);
+  return point && finite(point.voltageV) ? point.voltageV : null;
 }
 
 function modelAssessment(input: GittPulseInputV1): ModelAssessmentV1 & {
@@ -70,8 +113,9 @@ function addMetricFinding(
   metric: number | null,
   status: QcStatus,
   message?: string,
+  metadata: Parameters<typeof qcFinding>[4] = {},
 ): void {
-  findings.push(qcFinding(code, status, finite(metric) ? metric : null, message));
+  findings.push(qcFinding(code, status, finite(metric) ? metric : null, message, metadata));
 }
 
 function addUpperBoundFinding(
@@ -82,11 +126,14 @@ function addUpperBoundFinding(
   reviewMaximum: number,
   missingStatus: QcStatus = 'rejected',
 ): void {
+  const threshold = finite(metric) && metric <= validMaximum ? validMaximum : reviewMaximum;
   addMetricFinding(
     findings,
     code,
     metric,
     finite(metric) ? upperBoundStatus(metric, validMaximum, reviewMaximum) : missingStatus,
+    undefined,
+    { threshold },
   );
 }
 
@@ -98,11 +145,14 @@ function addLowerBoundFinding(
   reviewMinimum: number,
   missingStatus: QcStatus = 'rejected',
 ): void {
+  const threshold = finite(metric) && metric >= validMinimum ? validMinimum : reviewMinimum;
   addMetricFinding(
     findings,
     code,
     metric,
     finite(metric) ? lowerBoundStatus(metric, validMinimum, reviewMinimum) : missingStatus,
+    undefined,
+    { threshold },
   );
 }
 
@@ -188,6 +238,11 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
       input.config.voltageResolutionV,
       input.config.voltageResolutionEvidence,
     ),
+    ...resolutionEvidenceFindings(
+      'current',
+      input.config.currentResolutionA,
+      input.config.currentResolutionEvidence,
+    ),
   );
 
   for (const [label, rows] of [
@@ -238,14 +293,43 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
   const pulseEndPoint = timeline.length
     ? timeline.reduce((latest, point) => (point.timeS > latest.timeS ? point : latest), timeline[0])
     : null;
+  const currentValues = timeline.map((point) => point.currentA);
+  const pulseCurrentCv = currentValues.length >= 2 ? robustCoefficientOfVariation(currentValues) : null;
+  const medianPulseCurrentA = currentValues.length ? median(currentValues) : null;
+  if (!finite(medianPulseCurrentA) || medianPulseCurrentA === 0) {
+    findings.push(qcFinding('pulse_current_zero_or_unavailable', 'rejected', medianPulseCurrentA));
+  }
+  const pulseDirection = finite(medianPulseCurrentA) ? Math.sign(medianPulseCurrentA) : Number.NaN;
+  const t0Selection = findLoadedPulseT0Point(
+    timeline,
+    input.config.currentResolutionA,
+    pulseDirection,
+  );
+  if (t0Selection.reason !== 'ok') {
+    findings.push(
+      qcFinding(
+        t0Selection.reason === 'missing'
+          ? 'ENDPOINT_LOADED_T0_MISSING'
+          : t0Selection.reason === 'direction_conflict'
+            ? 'ENDPOINT_T0_DIRECTION_CONFLICT'
+            : 'ENDPOINT_T0_NOT_LOADED',
+        'rejected',
+      ),
+    );
+  }
+  const pulseT0Point = t0Selection.point;
   const loadedPulsePoints = timeline.filter((point) => point.timeS > 0);
   const pulseStartPoint = loadedPulsePoints.length
     ? loadedPulsePoints.reduce(
         (earliest, point) => (point.timeS < earliest.timeS ? point : earliest),
-        loadedPulsePoints[0],
-      )
+      loadedPulsePoints[0],
+    )
     : null;
-  const pulseStartVoltageV = pulseStartPoint?.voltageV ?? null;
+  const firstPositivePulseTimeS = pulseStartPoint?.timeS ?? null;
+  const firstPositivePulseVoltageV = pulseStartPoint?.voltageV ?? null;
+  const pulseT0VoltageV = pulseT0Point?.voltageV ?? null;
+  const pulseT0CurrentA = pulseT0Point?.currentA ?? null;
+  const pulseStartVoltageV = pulseT0VoltageV;
   const pulseEndVoltageV = pulseEndPoint?.voltageV ?? null;
   const noiseFloorV = Math.max(
     input.config.voltageResolutionV ?? 0,
@@ -255,7 +339,6 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
 
   const fitSelection = selectFitWindow(
     timeline,
-    finite(pulseDurationS) ? pulseDurationS : 0,
     noiseFloorV,
     input.config.fitWindowOverride,
   );
@@ -286,27 +369,108 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
     finite(preRestEndPotentialV) && finite(postRestEndPotentialV)
       ? postRestEndPotentialV - preRestEndPotentialV
       : null;
+  const preRestLastRawVoltageV = lastObservedRestVoltage(input.preRestRows);
+  const postRestLastRawVoltageV = lastObservedRestVoltage(input.postRestRows);
+  const deltaEsRawV =
+    finite(preRestLastRawVoltageV) && finite(postRestLastRawVoltageV)
+      ? postRestLastRawVoltageV - preRestLastRawVoltageV
+      : null;
+  const restEstimatorDifferencePreV =
+    finite(preRestEndPotentialV) && finite(preRestLastRawVoltageV)
+      ? preRestEndPotentialV - preRestLastRawVoltageV
+      : null;
+  const restEstimatorDifferencePostV =
+    finite(postRestEndPotentialV) && finite(postRestLastRawVoltageV)
+      ? postRestEndPotentialV - postRestLastRawVoltageV
+      : null;
   const fitEndTimeS = fit ? fit.points[fit.points.length - 1].timeS : null;
   const lengthCm = geometry.activeMaterialEquivalentThicknessCm;
   const deltaEtV =
-    finite(pulseStartVoltageV) && finite(pulseEndVoltageV)
-      ? pulseEndVoltageV - pulseStartVoltageV
+    finite(pulseT0VoltageV) && finite(pulseEndVoltageV)
+      ? pulseEndVoltageV - pulseT0VoltageV
       : null;
-  let diagnosticCandidateMetricValueCm2PerS: number | null = null;
-  if (
-    finite(deltaEsV) &&
-    finite(deltaEtV) &&
-    deltaEtV !== 0 &&
-    finite(lengthCm) &&
-    finite(pulseDurationS) &&
-    pulseDurationS > 0
-  ) {
-    const candidate =
-      (4 / (Math.PI * pulseDurationS)) *
-      lengthCm ** 2 *
-      (deltaEsV / deltaEtV) ** 2;
-    if (Number.isFinite(candidate) && candidate >= 0) diagnosticCandidateMetricValueCm2PerS = candidate;
-  }
+  const restEndSensitivityAudit = buildRestEndSensitivityAudit({
+    preRest: input.preRestRows,
+    postRest: input.postRestRows,
+    lengthCm,
+    pulseDurationS,
+    deltaEtV,
+    calculateD: calculateEndpointD,
+  });
+  const diagnosticCandidateMetricValueCm2PerS = calculateEndpointD(
+    lengthCm,
+    pulseDurationS,
+    deltaEsV,
+    deltaEtV,
+  );
+  const legacyFirstPositiveDeltaEtV =
+    finite(firstPositivePulseVoltageV) && finite(pulseEndVoltageV)
+      ? pulseEndVoltageV - firstPositivePulseVoltageV
+      : null;
+  const legacyFirstPositiveEndpointMetricValueCm2PerS = calculateEndpointD(
+    lengthCm,
+    pulseDurationS,
+    deltaEsV,
+    legacyFirstPositiveDeltaEtV,
+  );
+  const deltaEtDefinitionDifferenceV =
+    finite(deltaEtV) && finite(legacyFirstPositiveDeltaEtV)
+      ? deltaEtV - legacyFirstPositiveDeltaEtV
+      : null;
+  const endpointDRatioVsLegacy =
+    finite(diagnosticCandidateMetricValueCm2PerS) && diagnosticCandidateMetricValueCm2PerS > 0 &&
+    finite(legacyFirstPositiveEndpointMetricValueCm2PerS) && legacyFirstPositiveEndpointMetricValueCm2PerS > 0
+      ? diagnosticCandidateMetricValueCm2PerS / legacyFirstPositiveEndpointMetricValueCm2PerS
+      : null;
+
+  const configuredRegressionWindows = input.config.regressionWindows?.length
+    ? input.config.regressionWindows
+    : DEFAULT_GITT_REGRESSION_WINDOWS;
+  const regressionWindowSpecs = configuredRegressionWindows.some(
+    (window) => window.kind === 'legacy_first_5',
+  )
+    ? configuredRegressionWindows
+    : [DEFAULT_GITT_REGRESSION_WINDOWS[0], ...configuredRegressionWindows];
+  const regressionWindows = regressionWindowSpecs.map((window) =>
+    evaluateRegressionWindow(
+      timeline,
+      window,
+      noiseFloorV,
+      pulseDurationS,
+      lengthCm,
+      deltaEsV,
+    ),
+  );
+  const cfx10sRegressionWindow = regressionWindows.find(
+    (window) => window.windowId === 'cfx_10s',
+  );
+  const legacyRegressionWindow = regressionWindows.find(
+    (window) => window.windowId === 'legacy_first_5',
+  );
+  const regressionCandidateMetricValueCm2PerS =
+    legacyRegressionWindow?.metricValueCm2PerS ?? null;
+  const finitePositiveRegressionValues = regressionWindows
+    .map((window) => window.metricValueCm2PerS)
+    .filter((value): value is number => finite(value) && value > 0);
+  const regressionWindowSensitivity = {
+    log10DRange: calculateLog10DRange(finitePositiveRegressionValues),
+    finitePositiveWindowCount: finitePositiveRegressionValues.length,
+  };
+  const cfx10sMetricValueCm2PerS = cfx10sRegressionWindow?.metricValueCm2PerS ?? null;
+  const legacyMetricValueCm2PerS = legacyRegressionWindow?.metricValueCm2PerS ?? null;
+  const windowStabilityDecades =
+    finite(cfx10sMetricValueCm2PerS) && cfx10sMetricValueCm2PerS > 0 &&
+    finite(legacyMetricValueCm2PerS) && legacyMetricValueCm2PerS > 0
+      ? Math.abs(Math.log10(legacyMetricValueCm2PerS) - Math.log10(cfx10sMetricValueCm2PerS))
+      : null;
+  const methodDivergenceDecades =
+    finite(cfx10sMetricValueCm2PerS) && cfx10sMetricValueCm2PerS > 0 &&
+    finite(diagnosticCandidateMetricValueCm2PerS) && diagnosticCandidateMetricValueCm2PerS > 0
+      ? Math.log10(cfx10sMetricValueCm2PerS) - Math.log10(diagnosticCandidateMetricValueCm2PerS)
+      : null;
+  const absMethodDivergenceDecades = finite(methodDivergenceDecades)
+    ? Math.abs(methodDivergenceDecades)
+    : null;
 
   const predictedDeltaEAtTauV =
     fit && finite(pulseDurationS) ? fit.slope * Math.sqrt(pulseDurationS) : null;
@@ -333,12 +497,10 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
       ? (diagnosticCandidateMetricValueCm2PerS * pulseDurationS) / lengthCm ** 2
       : null;
 
-  const currentValues = timeline.map((point) => point.currentA);
-  const pulseCurrentCv = currentValues.length >= 2 ? robustCoefficientOfVariation(currentValues) : null;
-  const medianPulseCurrentA = currentValues.length ? median(currentValues) : null;
-  if (!finite(medianPulseCurrentA) || medianPulseCurrentA === 0) {
-    findings.push(qcFinding('pulse_current_zero_or_unavailable', 'rejected', medianPulseCurrentA));
-  }
+  const medianVoltageV =
+    finite(medianPulseCurrentA) && medianPulseCurrentA !== 0
+      ? calculateMedianVoltageV(input.pulseRows, medianPulseCurrentA < 0 ? 'discharge' : 'charge')
+      : null;
 
   const integratedCapacity = integratePulseCapacityAh(timeline);
   let pulseCapacityFraction: number | null = null;
@@ -640,6 +802,13 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
     ? 'computed'
     : 'not_computable';
   const state = resultStateFromFindings(findings, calculationState);
+  const endpointQuality = assessPrimaryEndpointQuality(findings, calculationState);
+  const cfx10sQuality = assessCfx10sQuality(
+    cfx10sRegressionWindow ?? null,
+    [],
+    windowStabilityDecades,
+    absMethodDivergenceDecades,
+  );
   const metricValueCm2PerS = calculationState === 'computed'
     ? diagnosticCandidateMetricValueCm2PerS
     : null;
@@ -655,6 +824,12 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
     calculationMethod: 'wh_planar_manual_endpoint',
     metricValueCm2PerS,
     diagnosticCandidateMetricValueCm2PerS,
+    regressionCandidateMetricValueCm2PerS,
+    windowStabilityDecades,
+    methodDivergenceDecades,
+    absMethodDivergenceDecades,
+    regressionWindows,
+    regressionWindowSensitivity,
     activeMassG: Number.isFinite(input.config.activeMassG) ? input.config.activeMassG : null,
     activeMassSourceId: input.config.activeMassSourceId ?? null,
     singleFaceAreaCm2: geometry.singleFaceAreaCm2,
@@ -663,10 +838,43 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
     fitEndTimeS,
     preRestEndPotentialV,
     postRestEndPotentialV,
+    restEndSensitivityAudit,
+    pulseT0VoltageV,
+    pulseT0CurrentA,
+    endpointStartTimeS: pulseT0Point ? 0 : null,
+    firstPositivePulseTimeS,
+    firstPositivePulseVoltageV,
+    endpointStartTemporalResolutionS: firstPositivePulseTimeS,
+    initialObservedDropV:
+      finite(preRestEndPotentialV) && finite(firstPositivePulseVoltageV)
+        ? preRestEndPotentialV - firstPositivePulseVoltageV
+        : null,
+    onsetObservedDropV:
+      finite(preRestEndPotentialV) && finite(pulseT0VoltageV)
+        ? preRestEndPotentialV - pulseT0VoltageV
+        : null,
+    earlyPolarizationDropV:
+      finite(pulseT0VoltageV) && finite(firstPositivePulseVoltageV)
+        ? pulseT0VoltageV - firstPositivePulseVoltageV
+        : null,
+    preRestToFirstPositiveDropV:
+      finite(preRestEndPotentialV) && finite(firstPositivePulseVoltageV)
+        ? preRestEndPotentialV - firstPositivePulseVoltageV
+        : null,
+    medianVoltageV,
     deltaEsV,
+    preRestLastRawVoltageV,
+    postRestLastRawVoltageV,
+    deltaEsRawV,
+    restEstimatorDifferencePreV,
+    restEstimatorDifferencePostV,
     pulseStartVoltageV,
     pulseEndVoltageV,
     deltaEtV,
+    legacyFirstPositiveDeltaEtV,
+    legacyFirstPositiveEndpointMetricValueCm2PerS,
+    deltaEtDefinitionDifferenceV,
+    endpointDRatioVsLegacy,
     pulseBaselineExtrapolatedV: fit?.intercept ?? null,
     predictedDeltaEAtTauV,
     observedDeltaEAtTauV,
@@ -693,5 +901,10 @@ export function analyzeGittPulse(input: GittPulseInputV1): GittResultV1 {
     postRestDiagnostics: postRest.diagnostics,
     fitDiagnostics: fitSelection.diagnostics,
     qcFindings: findings,
+    primaryEndpointQcStatus: endpointQuality.status,
+    primaryEndpointQcReasons: endpointQuality.reasons,
+    cfx10SlopeQcStatus: cfx10sQuality.status,
+    cfx10SlopeQcReasons: cfx10sQuality.reasons,
+    primaryComparisonEligibility: endpointQuality.eligibility,
   };
 }

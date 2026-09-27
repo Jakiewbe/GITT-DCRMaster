@@ -10,6 +10,7 @@ import { qcFinding, resultStateFromFindings } from '../qc';
 import { resolutionEvidenceFindings } from '../measurementResolution';
 import { median, robustCoefficientOfVariation, robustSigma, theilSenRegression } from '../math/statistics';
 import { DCR_QC_POLICY_V1, NANOSECONDS_PER_SECOND } from './policy';
+import { analyzeTwoCurrentDcrEventV1 } from './analyzeDifferential';
 import {
   buildPulseTimeline,
   compareCanonicalRows,
@@ -88,7 +89,7 @@ function metricName(metric: DcrRequestedMetricV1): string {
 }
 
 function requestedOffsetNs(metric: DcrRequestedMetricV1): bigint | null {
-  if (metric.kind === 'first_sample') return null;
+  if (metric.kind !== 'exact_time') return null;
   if (metric.offsetTicks < 0n || metric.offsetResolutionNs <= 0n) return null;
   return metric.offsetTicks * metric.offsetResolutionNs;
 }
@@ -566,6 +567,9 @@ function analyzeMetric(
 }
 
 export function analyzeDcrEventV1(input: DcrEventInputV1): DcrMetricResultV1[] {
+  if (input.config.calculationMethod === 'two_current_terminal_v1') {
+    return analyzeTwoCurrentDcrEventV1(input);
+  }
   if (input.protocolRole !== 'dcr_pulse') return [];
 
   const metrics = input.config.requestedMetrics;

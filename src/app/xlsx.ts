@@ -42,7 +42,10 @@ function normalizedCellValue(value: XlsxCellValue): string | number | boolean | 
 
 function cellXml(reference: string, value: XlsxCellValue, style = 0): string {
   const normalized = normalizedCellValue(value);
-  if (normalized === null) return `<c r="${reference}" s="${style}"/>`;
+  // Omit missing cells entirely. Some plotting programs import a styled but
+  // valueless <c/> cell as numeric zero, which creates false drops and lines
+  // across the pulse separators in the exported wide tables.
+  if (normalized === null) return '';
   if (typeof normalized === 'number') {
     return `<c r="${reference}" s="${style}"><v>${String(normalized)}</v></c>`;
   }
@@ -149,7 +152,14 @@ export async function createXlsxWorkbook(sheets: XlsxSheet[]): Promise<Blob> {
   if (sheets.some((sheet) => sheet.columns.length === 0)) {
     throw new RangeError('xlsx_sheet_requires_columns');
   }
-  const writer = new ZipWriter(new BlobWriter(XLSX_MIME));
+  // The packaged WebView2 runtime can reject zip.js' blob worker/CompressionStream
+  // path. XLSX does not require DEFLATE, so use stored entries and keep generation
+  // on the current thread; this makes desktop export deterministic.
+  const writer = new ZipWriter(new BlobWriter(XLSX_MIME), {
+    compressionMethod: 0,
+    useWebWorkers: false,
+    useCompressionStream: false,
+  });
   await writer.add('[Content_Types].xml', new TextReader(contentTypesXml(sheets.length)));
   await writer.add('_rels/.rels', new TextReader(ROOT_RELATIONSHIPS));
   await writer.add('xl/workbook.xml', new TextReader(workbookXml(sheets)));

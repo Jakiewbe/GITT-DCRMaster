@@ -9,7 +9,13 @@ import {
   hashNormalizationReceipt,
   sha256Hex,
 } from '../../science/hash';
-import { recordStorageFloat32ResolutionEvidence } from '../../science/measurementResolution';
+import {
+  recordStorageFloat32ResolutionEvidence,
+  unavailableMeasurementResolutionSet,
+} from '../../science/measurementResolution';
+import {
+  landCexCurrentResolutionEvidence,
+} from '../land/cex';
 import { ticksToSeconds } from '../../science/time';
 import { parseNewareNdax, type NewareNdaxMetadata } from './ndax';
 
@@ -23,8 +29,8 @@ export type NewareCanonicalDataset = {
 };
 
 /**
- * NDC17 stores voltage and current as float32. The bounds below are derived
- * from the declared full-scale ranges and are intentionally marked
+ * NDC14 and NDC17 store voltage/current as float32. The bounds below are
+ * derived from the declared full-scale ranges and are intentionally marked
  * provisional: they describe record serialization, not instrument accuracy.
  */
 export function deriveNewareMeasurementResolution(
@@ -37,6 +43,19 @@ export function deriveNewareMeasurementResolution(
     ),
     voltageV: recordStorageFloat32ResolutionEvidence(metadata.voltageRangeV, 'Voltage'),
   };
+}
+
+/** Use only evidence appropriate to the adapter that produced the rows. */
+export function deriveAdapterMeasurementResolution(
+  metadata: NewareNdaxMetadata,
+): MeasurementResolutionSetV1 {
+  if (metadata.parserProfileId === 'land-cex-binary-v1') {
+    return {
+      currentA: landCexCurrentResolutionEvidence(),
+      voltageV: unavailableMeasurementResolutionSet().voltageV,
+    };
+  }
+  return deriveNewareMeasurementResolution(metadata);
 }
 
 function canonicalStepType(status: string): CanonicalStepType {
@@ -57,6 +76,7 @@ export async function normalizeNewareNdax(
   const firstTimestampMs = parsed.records[0].timestampMs;
   const timeResolutionNs = parsed.metadata.sourceTimeResolutionNs;
   const measurementResolution = deriveNewareMeasurementResolution(parsed.metadata);
+  const ndcLabel = parsed.metadata.ndcVersion === 14 ? 'NDC14' : 'NDC17';
 
   const rows = parsed.records.map<CanonicalRowV1>((record) => {
     const elapsedTimeTicks = record.timestampMs - firstTimestampMs;
@@ -102,12 +122,12 @@ export async function normalizeNewareNdax(
     vendorProfileId: parsed.metadata.parserProfileId,
     vendorProfileVersion: parsed.metadata.parserProfileVersion,
     unitEvidence: {
-      voltage: 'NDC17 data.ndc float32 voltage in V; source precision preserved',
-      current: 'NDC17 data.ndc float32 current in A; source precision preserved without display rounding',
-      capacity: 'NDC17 data_runInfo.ndc float32 cumulative capacity in Ah',
+      voltage: `${ndcLabel} data.ndc float32 voltage in V; source precision preserved`,
+      current: `${ndcLabel} data.ndc float32 current in A; source precision preserved without display rounding`,
+      capacity: `${ndcLabel} data_runInfo.ndc float32 cumulative capacity in Ah`,
     },
-    signEvidence: 'Signed NDC17 current is preserved; this provisional profile interprets discharge as negative',
-    timeEvidence: 'NDC17 integer epoch milliseconds and integer step milliseconds',
+    signEvidence: `Signed ${ndcLabel} current is preserved; this provisional profile interprets discharge as negative`,
+    timeEvidence: `${ndcLabel} integer epoch milliseconds and integer step milliseconds`,
     capacityEvidence: 'Vendor cumulative charge/discharge fields retained separately',
     resolutionEvidence: measurementResolution,
   });

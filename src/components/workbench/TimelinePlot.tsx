@@ -83,7 +83,7 @@ export const TimelinePlot = memo(function TimelinePlot({ rows }: TimelinePlotPro
     const [currentMinimum, currentMaximum] = extent(points.map((point) => point.currentMa));
     const innerWidth = WIDTH - LEFT - RIGHT;
     const innerHeight = HEIGHT - TOP - BOTTOM;
-    const x = (value: number) => LEFT + ((value - timeMinimum) / (timeMaximum - timeMinimum)) * innerWidth;
+    const x = (value: number) => LEFT + (((value / 60) - (timeMinimum / 60)) / ((timeMaximum - timeMinimum) / 60)) * innerWidth;
     const voltageY = (value: number) => TOP + (1 - (value - voltageMinimum) / (voltageMaximum - voltageMinimum)) * innerHeight;
     const currentY = (value: number) => TOP + (1 - (value - currentMinimum) / (currentMaximum - currentMinimum)) * innerHeight;
     return {
@@ -138,20 +138,20 @@ export const TimelinePlot = memo(function TimelinePlot({ rows }: TimelinePlotPro
         <path className="plot-line plot-line--voltage" d={voltagePath} />
         <path className="plot-line plot-line--current" d={currentPath} />
         <text className="plot-axis plot-axis--left" x={LEFT - 12} y={TOP + 4} textAnchor="end">
-          {plot.voltageMaximum.toFixed(2)} V
+          Voltage / V
         </text>
         <text className="plot-axis plot-axis--left" x={LEFT - 12} y={HEIGHT - BOTTOM} textAnchor="end">
           {plot.voltageMinimum.toFixed(2)} V
         </text>
         <text className="plot-axis plot-axis--right" x={WIDTH - RIGHT + 12} y={TOP + 4}>
-          {plot.currentMaximum.toFixed(2)} mA
+          Current / mA
         </text>
         <text className="plot-axis plot-axis--right" x={WIDTH - RIGHT + 12} y={HEIGHT - BOTTOM}>
           {plot.currentMinimum.toFixed(2)} mA
         </text>
-        <text className="plot-axis" x={LEFT} y={HEIGHT - 14}>0 h</text>
+        <text className="plot-axis" x={LEFT} y={HEIGHT - 14}>Time / min</text>
         <text className="plot-axis" x={WIDTH - RIGHT} y={HEIGHT - 14} textAnchor="end">
-          {durationHours.toFixed(2)} h
+          {(durationHours * 60).toFixed(1)} min
         </text>
       </svg>
       <div className="plot-legend" aria-hidden="true">

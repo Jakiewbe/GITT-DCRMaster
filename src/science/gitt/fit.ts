@@ -1,5 +1,7 @@
 import type {
   FitWindowOverrideV1,
+  GittRegressionWindowResultV1,
+  GittRegressionWindowSpecV1,
   GittFitDiagnosticsV1,
   QcFinding,
 } from '../contracts';
@@ -11,6 +13,27 @@ import {
 } from '../math/statistics';
 import type { TimedPulsePoint } from './aggregation';
 import { GITT_QC_POLICY_V1 as POLICY } from './policy';
+import { calculateRegressionMetricCm2PerS } from './regressionMetric';
+
+export const DEFAULT_GITT_REGRESSION_WINDOWS = [
+  { kind: 'legacy_first_5', id: 'legacy_first_5', label: 'Legacy first 5 points' },
+  {
+    kind: 'fixed_time',
+    id: 'cfx_10s',
+    label: 'CFx 10 s (0 < t ≤ 64 s)',
+    startS: POLICY.cfx10s.requestedStartS,
+    endS: POLICY.cfx10s.requestedEndS,
+    startBoundary: POLICY.cfx10s.startBoundary,
+  },
+] as const satisfies readonly GittRegressionWindowSpecV1[];
+
+export const CFX_10S_GITT_REGRESSION_WINDOW = DEFAULT_GITT_REGRESSION_WINDOWS[1];
+
+/** Research windows retained for data with enough early-time resolution. */
+export const HIGH_RESOLUTION_GITT_REGRESSION_WINDOWS = [
+  { kind: 'fixed_time', id: 'cfx_4_25s', label: 'CFx 4–25 s', startS: 4, endS: 25 },
+  { kind: 'fixed_time', id: 'cfx_1_64s', label: 'CFx 1–64 s', startS: 1, endS: 64 },
+] as const satisfies readonly GittRegressionWindowSpecV1[];
 
 export type FitEvaluation = {
   points: TimedPulsePoint[];
@@ -34,8 +57,102 @@ export type FitSelection = {
   findings: QcFinding[];
 };
 
+export type RegressionPointSelection = {
+  points: TimedPulsePoint[];
+  requestedStartS: number | null;
+  requestedEndS: number | null;
+  warnings: string[];
+  windowCoverageIncomplete: boolean;
+};
+
+function orderedTimeline(timeline: TimedPulsePoint[]): TimedPulsePoint[] {
+  return [...timeline].sort((left, right) =>
+    left.timeS - right.timeS ||
+    (left.recordSequence < right.recordSequence ? -1 : left.recordSequence > right.recordSequence ? 1 : 0),
+  );
+}
+
+function finite(value: number | null): value is number {
+  return value !== null && Number.isFinite(value);
+}
+
+/** Selects points from the already canonicalized pulse time axis. */
+export function selectRegressionPoints(
+  timeline: TimedPulsePoint[],
+  window: GittRegressionWindowSpecV1,
+): RegressionPointSelection {
+  const ordered = orderedTimeline(timeline);
+  if (window.kind === 'legacy_first_5') {
+    return {
+      points: ordered.slice(1).filter((point) => point.timeS > 0).slice(0, POLICY.minimumFitPointCount),
+      requestedStartS: null,
+      requestedEndS: null,
+      warnings: [],
+      windowCoverageIncomplete: false,
+    };
+  }
+
+  if (
+    !Number.isFinite(window.startS) ||
+    !Number.isFinite(window.endS) ||
+    window.startS < 0 ||
+    window.endS <= window.startS
+  ) {
+    return {
+      points: [],
+      requestedStartS: window.startS,
+      requestedEndS: window.endS,
+      warnings: ['window_bounds_invalid'],
+      windowCoverageIncomplete: true,
+    };
+  }
+
+  const points = ordered.filter((point) => {
+    const startIncluded = window.startBoundary === 'exclusive'
+      ? point.timeS > window.startS
+      : point.timeS >= window.startS;
+    return startIncluded && point.timeS <= window.endS;
+  });
+  const firstTimeS = ordered[0]?.timeS ?? null;
+  const lastTimeS = ordered.at(-1)?.timeS ?? null;
+  const startCovered = window.startBoundary === 'exclusive'
+    ? finite(lastTimeS) && lastTimeS > window.startS
+    : finite(firstTimeS) && firstTimeS <= window.startS;
+  const windowCoverageIncomplete =
+    !finite(firstTimeS) ||
+    !finite(lastTimeS) ||
+    !startCovered ||
+    lastTimeS < window.endS;
+  return {
+    points,
+    requestedStartS: window.startS,
+    requestedEndS: window.endS,
+    warnings: windowCoverageIncomplete ? ['window_coverage_incomplete'] : [],
+    windowCoverageIncomplete,
+  };
+}
+
+function samplingCoverageFor(
+  window: GittRegressionWindowSpecV1,
+  uniqueTimePointCount: number,
+): GittRegressionWindowResultV1['samplingCoverage'] {
+  if (window.kind !== 'fixed_time' || window.id !== 'cfx_10s') return 'not_applicable';
+  if (uniqueTimePointCount >= POLICY.cfx10s.fullPointMinimum) return 'full';
+  if (uniqueTimePointCount >= POLICY.cfx10s.partialPointMinimum) return 'partial';
+  return 'infeasible';
+}
+
+function linearityClassFor(
+  rSquared: number | null,
+): GittRegressionWindowResultV1['linearityClass'] {
+  if (!finite(rSquared)) return 'unavailable';
+  if (rSquared >= POLICY.cfx10s.rSquaredStrongMinimum) return 'strong_linearity';
+  if (rSquared >= POLICY.cfx10s.rSquaredAcceptableMinimum) return 'acceptable_review';
+  return 'early_response_nonlinear';
+}
+
 function emptyDiagnostics(
-  mode: 'automatic' | 'manual',
+  mode: 'fixed_first_five' | 'manual',
   expectedUniquePoints: number,
   minimumSamplingFrequencyRequiredHz: number | null,
   override: FitWindowOverrideV1 | null,
@@ -129,16 +246,139 @@ export function evaluateFit(points: TimedPulsePoint[], noiseFloorV: number): Fit
   };
 }
 
-function windowDuration(evaluation: FitEvaluation): number {
-  return evaluation.points[evaluation.points.length - 1].timeS - evaluation.points[0].timeS;
-}
+export function evaluateRegressionWindow(
+  timeline: TimedPulsePoint[],
+  window: GittRegressionWindowSpecV1,
+  noiseFloorV: number,
+  pulseDurationS: number | null,
+  lengthCm: number | null,
+  deltaEsV: number | null,
+): GittRegressionWindowResultV1 {
+  const selection = selectRegressionPoints(timeline, window);
+  const warnings = [...selection.warnings];
+  const actualStartS = selection.points[0]?.timeS ?? null;
+  const actualEndS = selection.points.at(-1)?.timeS ?? null;
+  const pointCount = selection.points.reduce((sum, point) => sum + point.sourceRowCount, 0);
+  const uniqueTimePointCount = selection.points.length;
+  const samplingCoverage = samplingCoverageFor(window, uniqueTimePointCount);
+  const fitDurationS = finite(actualStartS) && finite(actualEndS)
+    ? actualEndS - actualStartS
+    : null;
+  const fitEndFractionOfPulse = finite(actualEndS) && finite(pulseDurationS) && pulseDurationS > 0
+    ? actualEndS / pulseDurationS
+    : null;
 
-function orderCandidates(left: FitEvaluation, right: FitEvaluation): number {
-  const durationDifference = windowDuration(right) - windowDuration(left);
-  if (durationDifference !== 0) return durationDifference;
-  if (left.points.length !== right.points.length) return right.points.length - left.points.length;
-  if (left.points[0].timeS !== right.points[0].timeS) return left.points[0].timeS - right.points[0].timeS;
-  return (left.curvatureMetric ?? Number.POSITIVE_INFINITY) - (right.curvatureMetric ?? Number.POSITIVE_INFINITY);
+  if (uniqueTimePointCount < POLICY.minimumFitPointCount) {
+    warnings.push('fit_point_count_below_minimum');
+    return {
+      windowId: window.id,
+      windowLabel: window.label,
+      kind: window.kind,
+      requestedStartS: selection.requestedStartS,
+      requestedEndS: selection.requestedEndS,
+      actualStartS,
+      actualEndS,
+      pointCount,
+      uniqueTimePointCount,
+      fitDurationS,
+      fitEndFractionOfPulse,
+      slopeVPerSqrtS: null,
+      interceptV: null,
+      rSquared: null,
+      rmseV: null,
+      slopeStdError: null,
+      curvatureMetric: null,
+      maxNormalizedResidual: null,
+      monotonicityRatio: null,
+      durbinWatson: null,
+      metricValueCm2PerS: null,
+      windowCoverageIncomplete: selection.windowCoverageIncomplete,
+      samplingCoverage,
+      linearityClass: 'unavailable',
+      status: 'infeasible',
+      warnings,
+    };
+  }
+
+  const fit = evaluateFit(selection.points, noiseFloorV);
+  if (!fit) {
+    warnings.push('fit_unavailable');
+    return {
+      windowId: window.id,
+      windowLabel: window.label,
+      kind: window.kind,
+      requestedStartS: selection.requestedStartS,
+      requestedEndS: selection.requestedEndS,
+      actualStartS,
+      actualEndS,
+      pointCount,
+      uniqueTimePointCount,
+      fitDurationS,
+      fitEndFractionOfPulse,
+      slopeVPerSqrtS: null,
+      interceptV: null,
+      rSquared: null,
+      rmseV: null,
+      slopeStdError: null,
+      curvatureMetric: null,
+      maxNormalizedResidual: null,
+      monotonicityRatio: null,
+      durbinWatson: null,
+      metricValueCm2PerS: null,
+      windowCoverageIncomplete: selection.windowCoverageIncomplete,
+      samplingCoverage,
+      linearityClass: 'unavailable',
+      status: 'review',
+      warnings,
+    };
+  }
+
+  const metricValueCm2PerS = calculateRegressionMetricCm2PerS({
+    lengthCm,
+    deltaEsV,
+    pulseDurationS,
+    slopeVPerSqrtS: fit.slope,
+  });
+  if (metricValueCm2PerS === null) warnings.push('regression_metric_unavailable');
+  if (!fit.hardGatePass) warnings.push('fit_hard_gates_failed');
+  const status =
+    metricValueCm2PerS === null
+      ? 'review'
+      : uniqueTimePointCount < (window.kind === 'fixed_time' && window.id === 'cfx_10s'
+        ? POLICY.cfx10s.fullPointMinimum
+        : POLICY.fitPointCount.validMinimum) ||
+          selection.windowCoverageIncomplete ||
+          !fit.hardGatePass
+        ? 'review'
+        : 'valid';
+  return {
+    windowId: window.id,
+    windowLabel: window.label,
+    kind: window.kind,
+    requestedStartS: selection.requestedStartS,
+    requestedEndS: selection.requestedEndS,
+    actualStartS,
+    actualEndS,
+    pointCount,
+    uniqueTimePointCount,
+    fitDurationS,
+    fitEndFractionOfPulse,
+    slopeVPerSqrtS: fit.slope,
+    interceptV: fit.intercept,
+    rSquared: fit.rSquared,
+    rmseV: fit.rmseV,
+    slopeStdError: fit.slopeStandardError,
+    curvatureMetric: fit.curvatureMetric,
+    maxNormalizedResidual: fit.normalizedMaxResidual,
+    monotonicityRatio: fit.monotonicityFraction,
+    durbinWatson: fit.durbinWatson,
+    metricValueCm2PerS,
+    windowCoverageIncomplete: selection.windowCoverageIncomplete,
+    samplingCoverage,
+    linearityClass: linearityClassFor(fit.rSquared),
+    status,
+    warnings,
+  };
 }
 
 function sensitivityFraction(selected: FitEvaluation, candidates: FitEvaluation[]): number | null {
@@ -155,7 +395,7 @@ function sensitivityFraction(selected: FitEvaluation, candidates: FitEvaluation[
 function createDiagnostics(
   selected: FitEvaluation,
   candidates: FitEvaluation[],
-  mode: 'automatic' | 'manual',
+  mode: 'fixed_first_five' | 'manual',
   expectedUniquePoints: number,
   minimumSamplingFrequencyRequiredHz: number | null,
   override: FitWindowOverrideV1 | null,
@@ -189,20 +429,17 @@ function createDiagnostics(
 
 export function selectFitWindow(
   timeline: TimedPulsePoint[],
-  pulseDurationS: number,
   noiseFloorV: number,
   override: FitWindowOverrideV1 | null,
 ): FitSelection {
   const findings: QcFinding[] = [];
-  const autoEligible = timeline
+  const fixedFitPoints = timeline
     .slice(1)
-    .filter((point) => point.timeS > 0 && point.timeS <= pulseDurationS * POLICY.automaticWindowFraction);
-  const expectedUniquePoints = autoEligible.length;
-  const minimumSamplingFrequencyRequiredHz =
-    pulseDurationS > 0
-      ? POLICY.minimumFitPointCount / (pulseDurationS * POLICY.automaticWindowFraction)
-      : null;
-  const mode = override ? 'manual' : 'automatic';
+    .filter((point) => point.timeS > 0)
+    .slice(0, POLICY.minimumFitPointCount);
+  const expectedUniquePoints = fixedFitPoints.length;
+  const minimumSamplingFrequencyRequiredHz = null;
+  const mode = override ? 'manual' : 'fixed_first_five';
 
   if (override) {
     const reason = override.reason.trim();
@@ -275,13 +512,13 @@ export function selectFitWindow(
     };
   }
 
-  if (autoEligible.length < POLICY.minimumFitPointCount) {
+  if (fixedFitPoints.length < POLICY.minimumFitPointCount) {
     findings.push(
       qcFinding(
-        'automatic_fit_sampling_infeasible',
+        'fixed_fit_sampling_infeasible',
         'rejected',
-        autoEligible.length,
-        'The configured pulse and sampling cadence cannot provide five unique ticks in the first 35%.',
+        fixedFitPoints.length,
+        'The pulse does not contain five unique points after the first point for the fixed auxiliary regression.',
       ),
     );
     return {
@@ -292,22 +529,10 @@ export function selectFitWindow(
     };
   }
 
-  const candidates: FitEvaluation[] = [];
-  const startCount = Math.min(POLICY.automaticStartCandidateCount, autoEligible.length);
-  for (let startIndex = 0; startIndex < startCount; startIndex += 1) {
-    for (
-      let endIndex = autoEligible.length - 1;
-      endIndex >= startIndex + POLICY.minimumFitPointCount - 1;
-      endIndex -= 1
-    ) {
-      const evaluation = evaluateFit(autoEligible.slice(startIndex, endIndex + 1), noiseFloorV);
-      if (evaluation) candidates.push(evaluation);
-    }
-  }
-  const passing = candidates.filter((candidate) => candidate.hardGatePass).sort(orderCandidates);
-  const selected = passing[0] ?? [...candidates].sort(orderCandidates)[0] ?? null;
+  const selected = evaluateFit(fixedFitPoints, noiseFloorV);
+  const candidates = selected ? [selected] : [];
   if (!selected) {
-    findings.push(qcFinding('automatic_fit_regression_unavailable', 'rejected'));
+    findings.push(qcFinding('fixed_fit_regression_unavailable', 'rejected'));
     return {
       evaluation: null,
       allCandidateEvaluations: candidates,
@@ -315,13 +540,13 @@ export function selectFitWindow(
       findings,
     };
   }
-  if (passing.length === 0) {
+  if (!selected.hardGatePass) {
     findings.push(
       qcFinding(
-        'automatic_fit_no_window_passed_hard_gates',
+        'fixed_fit_no_window_passed_hard_gates',
         'rejected',
         null,
-        'The longest structural candidate is retained only as a diagnostic regression.',
+        'The fixed five-point auxiliary regression is retained only as a diagnostic regression.',
       ),
     );
   }

@@ -401,7 +401,7 @@ function reviveMaterialPreset(value: unknown): WorkbenchSettings['material'] {
 
 function reviveWorkbenchSettings(value: unknown): WorkbenchSettings {
   const settings = requireRecord(value, 'project_settings');
-  return {
+  const revived: WorkbenchSettings = {
     electrodeDiameterCm: requirePositiveFiniteNumber(
       settings.electrodeDiameterCm,
       'project_settings_electrodeDiameterCm',
@@ -437,6 +437,20 @@ function reviveWorkbenchSettings(value: unknown): WorkbenchSettings {
       'project_settings_datasetStartsAtFreshCell',
     ),
   };
+  if (hasOwn(settings, 'regressionManualWindow')) {
+    const manual = requireRecord(settings.regressionManualWindow, 'project_settings_regressionManualWindow');
+    revived.regressionManualWindow = {
+      startS: requireNullableFiniteNumber(
+        manual.startS,
+        'project_settings_regressionManualWindow_startS',
+      ),
+      endS: requireNullableFiniteNumber(
+        manual.endS,
+        'project_settings_regressionManualWindow_endS',
+      ),
+    };
+  }
+  return revived;
 }
 
 function parseBigIntField(value: unknown, name: string): bigint {

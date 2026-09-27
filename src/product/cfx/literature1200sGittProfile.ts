@@ -1,9 +1,15 @@
-import type { GittResultV1, MaterialPresetV1 } from '../../science/contracts';
+import type {
+  GittResultV1,
+  MaterialPresetV1,
+  PrimaryComparisonEligibilityV1,
+  QcReasonV1,
+  QcStatus,
+} from '../../science/contracts';
 import type { NewareGitt1200sEventV1 } from '../../adapters/neware/gitt1200sProfile';
 
 export const CFX_LITERATURE_GITT_1200S_PROFILE_V1 = {
   profileId: 'CFX_LITERATURE_GITT_1200S_COMPARATIVE_V1',
-  profileVersion: '1.0.0',
+  profileVersion: '1.2.0',
   completePulseDurationS: 1200,
   /** Accepts e.g. 1200.1 s controller sampling overrun as a completed pulse. */
   completePulseToleranceS: 1,
@@ -11,9 +17,21 @@ export const CFX_LITERATURE_GITT_1200S_PROFILE_V1 = {
   standardPostRestToleranceS: 1,
   pulseCutoffVoltageV: 1.5,
   pulseCutoffVoltageToleranceV: 0.005,
+  /** Post-processing comparison target; separate from the device Stop_Volt. */
+  comparisonTargetMedianVoltageV: 1.5,
   genericWhValidPerturbationMaximumFraction: 0.01,
   genericWhReviewPerturbationMaximumFraction: 0.03,
+  highRateSpecificCurrentThresholdMahPerG: 500,
+  /** @deprecated Use comparisonTargetMedianVoltageV. Kept for manifest compatibility. */
+  highRateMedianVoltageFloorV: 1.5,
 } as const;
+
+export const CFX_HIGH_RATE_SPECIFIC_CURRENT_THRESHOLD_MA_G =
+  CFX_LITERATURE_GITT_1200S_PROFILE_V1.highRateSpecificCurrentThresholdMahPerG;
+export const CFX_HIGH_RATE_MEDIAN_VOLTAGE_FLOOR_V =
+  CFX_LITERATURE_GITT_1200S_PROFILE_V1.comparisonTargetMedianVoltageV;
+export const CFX_COMPARISON_TARGET_MEDIAN_VOLTAGE_V =
+  CFX_LITERATURE_GITT_1200S_PROFILE_V1.comparisonTargetMedianVoltageV;
 
 export type CfxLiterature1200sPulseSourceV1 = Pick<
   GittResultV1,
@@ -32,7 +50,15 @@ export type CfxLiterature1200sPulseSourceV1 = Pick<
   | 'endpointConsistencyRelativeError'
   | 'pulseCurrentCv'
   | 'pulseEndVoltageV'
-> & {
+> & Partial<Pick<
+  GittResultV1,
+  | 'medianVoltageV'
+  | 'primaryEndpointQcStatus'
+  | 'primaryEndpointQcReasons'
+  | 'cfx10SlopeQcStatus'
+  | 'cfx10SlopeQcReasons'
+  | 'primaryComparisonEligibility'
+>> & {
   /** Derived from the following Rest step; never supplied as a manual setting. */
   postRestDurationS: number | null;
   /**
@@ -65,6 +91,8 @@ export type CfxLiteratureModelWarningCodeV1 =
   | 'pulse_current_stability_review'
   | 'incomplete_pulse_without_cutoff'
   | 'pulse_voltage_cutoff_early'
+  | 'post_protocol_cutoff'
+  | 'comparison_target_median_voltage'
   | 'post_rest_truncated'
   | 'nonstandard_post_rest';
 
@@ -73,22 +101,44 @@ export type CfxLiteratureModelWarningV1 = {
   message: string;
 };
 
+export type CfxLiteratureDisplayComparisonEligibilityV1 =
+  | 'included'
+  | 'excluded_comparison_target_median'
+  | 'excluded_protocol_cutoff'
+  | 'excluded_protocol_event'
+  | 'excluded_not_computable';
+
 export type CfxLiterature1200sPulseProfileResultV1 = {
   sourcePulseId: string;
   sourceOrder: number;
+  medianVoltageV: number | null;
   eventClassification:
     | 'complete_1200s_standard_rest'
+    | 'post_protocol_cutoff'
     | 'excluded_cutoff_early'
     | 'excluded_not_complete_1200s'
     | 'excluded_post_rest_truncated'
     | 'excluded_nonstandard_post_rest';
+  protocolStatus:
+    | 'compatible'
+    | 'post_protocol_cutoff'
+    | 'review'
+    | 'excluded_cutoff_early'
+    | 'incomplete_pulse'
+    | 'insufficient_rest';
   numericalState: 'computed' | 'not_computable';
   numericalCodes: string[];
   comparativeUse: 'available_with_model_warnings' | 'not_available';
+  primaryComparisonEligibility: PrimaryComparisonEligibilityV1;
+  displayComparisonEligibility: CfxLiteratureDisplayComparisonEligibilityV1;
   sourceGenericState: {
     calculationState: CfxLiterature1200sPulseSourceV1['calculationState'];
-    qcStatus: CfxLiterature1200sPulseSourceV1['qcStatus'];
+    qcStatus: QcStatus | null;
     qcCodes: string[];
+    primaryEndpointQcStatus: QcStatus;
+    primaryEndpointQcReasons: QcReasonV1[];
+    cfx10SlopeQcStatus: GittResultV1['cfx10SlopeQcStatus'];
+    cfx10SlopeQcReasons: QcReasonV1[];
   };
   transportComparison: {
     outputId: 'CFX_1200S_WH_APPARENT_COMPARATIVE_INDEX';
@@ -96,6 +146,8 @@ export type CfxLiterature1200sPulseProfileResultV1 = {
     dAppCandidateCm2PerS: number | null;
     intrinsicDiffusivityClaim: false;
   };
+  /** Finite result retained for audit even when protocol/display eligibility excludes it. */
+  auditDAppCandidateCm2PerS: number | null;
   polarization: {
     pulseEndPolarizationV: number | null;
     absolutePulseEndPolarizationV: number | null;
@@ -131,10 +183,19 @@ export type CfxLiterature1200sGittProfileResultV1 = {
     submittedPulseCount: number;
     complete1200sPulseCount: number;
     cutoffEarlyPulseCount: number;
+    postProtocolCutoffPulseCount: number;
     postRestTruncatedPulseCount: number;
     otherExcludedPulseCount: number;
     numericallyComputedComparativeIndexCount: number;
     numericallyNotComputableCount: number;
+    primaryComparisonIncludedCount: number;
+    primaryComparisonIncludedWithWarningsCount: number;
+    primaryComparisonExcludedCount: number;
+    displayComparisonIncludedCount: number;
+    displayComparisonExcludedCount: number;
+    comparisonTargetMedianExcludedCount: number;
+    /** @deprecated Use comparisonTargetMedianExcludedCount. */
+    highRateMedianFloorExcludedCount: number;
     genericSmallPerturbationExceededCount: number;
     medianDAppCandidateCm2PerS: number | null;
     medianAbsolutePulseEndPolarizationV: number | null;
@@ -163,6 +224,26 @@ function finite(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
 }
 
+/** Uses the existing pulse-capacity and pulse-duration evidence only. */
+export function deriveCfxEquivalentSpecificCurrentMahPerG(
+  pulseCapacityFraction: number | null,
+  pulseDurationS: number | null,
+  theoreticalSpecificCapacityMahPerG: number | null,
+): number | null {
+  return positiveFinite(theoreticalSpecificCapacityMahPerG) &&
+    positiveFinite(pulseDurationS) &&
+    finite(pulseCapacityFraction)
+    ? Math.abs(pulseCapacityFraction) * theoreticalSpecificCapacityMahPerG * 3600 / pulseDurationS
+    : null;
+}
+
+export function isCfxHighRateSpecificCurrent(
+  specificCurrentMahPerG: number | null,
+): boolean {
+  return finite(specificCurrentMahPerG) &&
+    specificCurrentMahPerG >= CFX_HIGH_RATE_SPECIFIC_CURRENT_THRESHOLD_MA_G;
+}
+
 function median(values: readonly number[]): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((left, right) => left - right);
@@ -176,7 +257,10 @@ function classifyEvent(
   postRestDurationS: number | null,
   programEvent: NewareGitt1200sEventV1 | null | undefined,
 ): CfxLiterature1200sPulseProfileResultV1['eventClassification'] {
-  if (programEvent?.program.programRecognized) {
+  if (programEvent?.isPostProtocolCutoff) {
+    return 'post_protocol_cutoff';
+  }
+  if (programEvent?.program?.programRecognized) {
     if (programEvent.termination === 'stop_voltage_terminated') {
       return 'excluded_cutoff_early';
     }
@@ -219,6 +303,37 @@ function classifyEvent(
     return 'excluded_post_rest_truncated';
   }
   return 'excluded_nonstandard_post_rest';
+}
+
+function protocolStatusFor(
+  classification: CfxLiterature1200sPulseProfileResultV1['eventClassification'],
+): CfxLiterature1200sPulseProfileResultV1['protocolStatus'] {
+  if (classification === 'complete_1200s_standard_rest') return 'compatible';
+  if (classification === 'post_protocol_cutoff') return 'post_protocol_cutoff';
+  if (classification === 'excluded_cutoff_early') return 'excluded_cutoff_early';
+  if (classification === 'excluded_post_rest_truncated' || classification === 'excluded_nonstandard_post_rest') {
+    return 'insufficient_rest';
+  }
+  return 'incomplete_pulse';
+}
+
+function displayComparisonEligibilityFor(
+  protocolDisplayEligible: boolean,
+  calculationState: CfxLiterature1200sPulseSourceV1['calculationState'],
+  dAppCandidateCm2PerS: number | null,
+  medianVoltageV: number | null,
+): CfxLiteratureDisplayComparisonEligibilityV1 {
+  if (!protocolDisplayEligible) return 'excluded_protocol_event';
+  if (
+    calculationState !== 'computed' ||
+    !positiveFinite(dAppCandidateCm2PerS)
+  ) {
+    return 'excluded_not_computable';
+  }
+  if (!finite(medianVoltageV) || medianVoltageV < CFX_COMPARISON_TARGET_MEDIAN_VOLTAGE_V) {
+    return 'excluded_comparison_target_median';
+  }
+  return 'included';
 }
 
 function deriveQref(
@@ -305,6 +420,41 @@ function profilePulse(
     pulse.programEvent,
   );
   const complete = eventClassification === 'complete_1200s_standard_rest';
+  const primaryEndpointQcStatus = pulse.primaryEndpointQcStatus ?? 'review';
+  const primaryEndpointQcReasons = pulse.primaryEndpointQcReasons ?? [];
+  const cfx10SlopeQcStatus = pulse.cfx10SlopeQcStatus ?? 'review';
+  const cfx10SlopeQcReasons = pulse.cfx10SlopeQcReasons ?? [];
+  const endpointEligibility = pulse.primaryComparisonEligibility ?? 'included_with_warnings';
+  const primaryComparisonEligibility: PrimaryComparisonEligibilityV1 =
+    !complete || pulse.calculationState !== 'computed' || primaryEndpointQcStatus === 'rejected'
+      ? 'excluded'
+      : endpointEligibility;
+  const durationS = pulse.pulseDurationS;
+  const capacityFraction = pulse.pulseCapacityFraction;
+  const equivalentSpecificCurrentMahPerG = deriveCfxEquivalentSpecificCurrentMahPerG(
+    capacityFraction,
+    durationS,
+    qref.theoreticalSpecificCapacityMahPerG,
+  );
+  const completePulseDuration =
+    finite(pulse.pulseDurationS) &&
+    Math.abs(pulse.pulseDurationS - CFX_LITERATURE_GITT_1200S_PROFILE_V1.completePulseDurationS) <=
+      CFX_LITERATURE_GITT_1200S_PROFILE_V1.completePulseToleranceS;
+  const protocolDisplayEligible = eventClassification === 'complete_1200s_standard_rest' || (
+    eventClassification === 'post_protocol_cutoff' &&
+    completePulseDuration &&
+    pulse.programEvent?.postRestState === 'completed_standard_rest'
+  );
+  const auditDAppCandidateCm2PerS =
+    pulse.calculationState === 'computed' && positiveFinite(pulse.diagnosticCandidateMetricValueCm2PerS)
+      ? pulse.diagnosticCandidateMetricValueCm2PerS
+      : null;
+  const displayComparisonEligibility = displayComparisonEligibilityFor(
+    protocolDisplayEligible,
+    pulse.calculationState,
+    auditDAppCandidateCm2PerS,
+    pulse.medianVoltageV ?? null,
+  );
   const warnings: CfxLiteratureModelWarningV1[] = [
     {
       code: 'cfx_conversion_model_limited',
@@ -317,7 +467,12 @@ function profilePulse(
       message: '输入材料并非 CFₓ conversion profile；输出仅用于审计，不能按 CFₓ profile 解释。',
     });
   }
-  if (eventClassification === 'excluded_cutoff_early') {
+  if (eventClassification === 'post_protocol_cutoff') {
+    warnings.push({
+      code: 'post_protocol_cutoff',
+      message: '该脉冲发生在首次 1.5 V 协议截止之后；协议状态保留用于审计，主图仍按中值电压比较目标判定。',
+    });
+  } else if (eventClassification === 'excluded_cutoff_early') {
     warnings.push({
       code: 'pulse_voltage_cutoff_early',
       message: '脉冲在约 1.5 V cutoff 前结束；这是协议设定的早停事件，不是 parser 分段错误，且不进入主比较趋势。',
@@ -338,31 +493,41 @@ function profilePulse(
       message: '该脉冲虽为 1200 s，但后续 Rest 超出标准 14400 s 窗口，未纳入主比较序列。',
     });
   }
+  if (displayComparisonEligibility === 'excluded_comparison_target_median') {
+    warnings.push({
+      code: 'comparison_target_median_voltage',
+      message: '该脉冲中值电压低于 1.5 V 比较目标；保留结果，但不进入主比较图。',
+    });
+  }
   const perturbationWarning = smallPerturbationWarning(pulse.pulseCapacityFraction);
   if (perturbationWarning) warnings.push(perturbationWarning);
   appendSourceWarnings(warnings, pulse);
 
   const canCalculateIndex =
-    complete &&
+    protocolDisplayEligible &&
     finite(pulse.diagnosticCandidateMetricValueCm2PerS) &&
-    pulse.diagnosticCandidateMetricValueCm2PerS > 0;
-  const numericalState = canCalculateIndex ? 'computed' : 'not_computable';
-  const numericalCodes = canCalculateIndex
-    ? ['wh_comparative_index_numerically_available']
+    pulse.diagnosticCandidateMetricValueCm2PerS > 0 &&
+    pulse.calculationState === 'computed';
+  const numericalState =
+    pulse.calculationState === 'computed' &&
+    finite(pulse.diagnosticCandidateMetricValueCm2PerS) &&
+    pulse.diagnosticCandidateMetricValueCm2PerS > 0
+      ? 'computed'
+      : 'not_computable';
+  const numericalCodes = numericalState === 'computed'
+    ? [
+        canCalculateIndex
+          ? 'wh_comparative_index_numerically_available'
+          : 'wh_comparative_index_not_eligible_for_primary_comparison',
+      ]
     : [
         complete
           ? 'wh_comparative_index_not_numerically_available'
           : 'wh_comparative_index_excluded_not_standard_1200s_event',
       ];
-  const durationS = pulse.pulseDurationS;
-  const capacityFraction = pulse.pulseCapacityFraction;
   const equivalentAverageCurrentA =
     positiveFinite(qref.qrefAh) && positiveFinite(durationS) && finite(capacityFraction)
       ? (Math.abs(capacityFraction) * qref.qrefAh * 3600) / durationS
-      : null;
-  const equivalentSpecificCurrentMahPerG =
-    positiveFinite(qref.theoreticalSpecificCapacityMahPerG) && positiveFinite(durationS) && finite(capacityFraction)
-      ? (Math.abs(capacityFraction) * qref.theoreticalSpecificCapacityMahPerG * 3600) / durationS
       : null;
   if (equivalentAverageCurrentA === null) {
     warnings.push({
@@ -391,14 +556,22 @@ function profilePulse(
   return {
     sourcePulseId: pulse.pulseId,
     sourceOrder,
+    medianVoltageV: pulse.medianVoltageV ?? null,
     eventClassification,
+    protocolStatus: protocolStatusFor(eventClassification),
     numericalState,
     numericalCodes,
     comparativeUse: canCalculateIndex ? 'available_with_model_warnings' : 'not_available',
+    primaryComparisonEligibility,
+    displayComparisonEligibility,
     sourceGenericState: {
       calculationState: pulse.calculationState,
       qcStatus: pulse.qcStatus,
       qcCodes: [...pulse.qcCodes],
+      primaryEndpointQcStatus,
+      primaryEndpointQcReasons: [...primaryEndpointQcReasons],
+      cfx10SlopeQcStatus,
+      cfx10SlopeQcReasons: [...cfx10SlopeQcReasons],
     },
     transportComparison: {
       outputId: 'CFX_1200S_WH_APPARENT_COMPARATIVE_INDEX',
@@ -406,6 +579,7 @@ function profilePulse(
       dAppCandidateCm2PerS: canCalculateIndex ? pulse.diagnosticCandidateMetricValueCm2PerS : null,
       intrinsicDiffusivityClaim: false,
     },
+    auditDAppCandidateCm2PerS,
     polarization: {
       pulseEndPolarizationV: pulse.observedDeltaEAtTauV,
       absolutePulseEndPolarizationV,
@@ -421,7 +595,9 @@ function profilePulse(
     },
     modelWarnings: warnings,
     userSummary: canCalculateIndex
-      ? '完整 1200 s 脉冲已按端点手算法生成结果；拟合和模型条件作为附加诊断展示。'
+      ? eventClassification === 'post_protocol_cutoff'
+        ? '该脉冲虽在协议 1.5 V 截止标记之后，但 4 h 静置完成且中值电压仍不低于 1.5 V，按中值电压比较目标保留结果。'
+        : '完整 1200 s 脉冲已按端点手算法生成结果；拟合和模型条件作为附加诊断展示。'
       : complete
         ? '完整 1200 s 脉冲缺少端点、静置或物理参数，当前无法完成手算法计算。'
         : '该脉冲未纳入固定 1200 s 的比较序列。',
@@ -473,6 +649,9 @@ export function analyzeCfxLiterature1200sGittProfile(
     cutoffEarlyPulseCount: pulses.filter(
       (pulse) => pulse.eventClassification === 'excluded_cutoff_early',
     ).length,
+    postProtocolCutoffPulseCount: pulses.filter(
+      (pulse) => pulse.eventClassification === 'post_protocol_cutoff',
+    ).length,
     postRestTruncatedPulseCount: pulses.filter(
       (pulse) => pulse.eventClassification === 'excluded_post_rest_truncated',
     ).length,
@@ -483,6 +662,27 @@ export function analyzeCfxLiterature1200sGittProfile(
     ).length,
     numericallyComputedComparativeIndexCount: calculatedPulses.length,
     numericallyNotComputableCount: completePulses.length - calculatedPulses.length,
+    primaryComparisonIncludedCount: pulses.filter(
+      (pulse) => pulse.primaryComparisonEligibility === 'included',
+    ).length,
+    primaryComparisonIncludedWithWarningsCount: pulses.filter(
+      (pulse) => pulse.primaryComparisonEligibility === 'included_with_warnings',
+    ).length,
+    primaryComparisonExcludedCount: pulses.filter(
+      (pulse) => pulse.primaryComparisonEligibility === 'excluded',
+    ).length,
+    displayComparisonIncludedCount: pulses.filter(
+      (pulse) => pulse.displayComparisonEligibility === 'included',
+    ).length,
+    displayComparisonExcludedCount: pulses.filter(
+      (pulse) => pulse.displayComparisonEligibility !== 'included',
+    ).length,
+    comparisonTargetMedianExcludedCount: pulses.filter(
+      (pulse) => pulse.displayComparisonEligibility === 'excluded_comparison_target_median',
+    ).length,
+    highRateMedianFloorExcludedCount: pulses.filter(
+      (pulse) => pulse.displayComparisonEligibility === 'excluded_comparison_target_median',
+    ).length,
     genericSmallPerturbationExceededCount,
     medianDAppCandidateCm2PerS: medianComparativeIndexCm2PerS,
     medianAbsolutePulseEndPolarizationV,

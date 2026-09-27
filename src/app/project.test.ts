@@ -254,6 +254,17 @@ describe('workbench project', () => {
     expect(parsed.settings).toEqual(customSettings);
   });
 
+  it('round-trips a manual regression validation window in project settings', () => {
+    const fixtureSettings: WorkbenchSettings = {
+      ...settings(),
+      regressionManualWindow: { startS: 4, endS: 40 },
+    };
+    const parsed = parseWorkbenchProject(
+      serializeWorkbenchProject(fixtureSettings, [dataset()]),
+    );
+    expect(parsed.settings.regressionManualWindow).toEqual({ startS: 4, endS: 40 });
+  });
+
   it('reports malformed JSON and schema failures, but accepts compatible saved app versions', () => {
     expectValidationFailure('{not-json', 'project_json_invalid');
 

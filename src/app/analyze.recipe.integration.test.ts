@@ -5,6 +5,7 @@ import { createCf1MaterialPreset } from '../science/material';
 import type { NewareCanonicalDataset } from '../adapters/neware/normalize';
 import {
   analyzeNewareDataset,
+  buildGittRegressionWindowSpecs,
   createNewareAnalysisIdentity,
   type WorkbenchSettings,
 } from './analyze';
@@ -35,6 +36,7 @@ function makeRow(
   stepElapsedS: number,
   voltageV: number,
   currentA: number,
+  dischargeCapacityAh: number | null = null,
 ): CanonicalRowV1 {
   return {
     sourceFileId: 'CFx-GITT-200ma-1.000mg.ndax',
@@ -60,7 +62,7 @@ function makeRow(
     analysisStepId,
     canonicalStepType,
     chargeCapacityAh: null,
-    dischargeCapacityAh: null,
+    dischargeCapacityAh,
     netCapacityAh: null,
   };
 }
@@ -139,6 +141,61 @@ function cfxGittDataset(): NewareCanonicalDataset {
   };
 }
 
+function cfxGittDatasetWithPostCutoffCycle(): NewareCanonicalDataset {
+  const base = cfxGittDataset();
+  let sequence = base.rows.length;
+  const rows: CanonicalRowV1[] = [...base.rows];
+  for (let timeS = 0; timeS <= 300; timeS += 10) {
+    rows.push(makeRow(sequence, 'pre-rest-2', '1', 'rest', 15_900 + timeS, timeS, 2.8, 0));
+    sequence += 1;
+  }
+  for (let timeS = 0; timeS <= 1200; timeS += 100) {
+    rows.push(
+      makeRow(
+        sequence,
+        'pulse-2',
+        '2',
+        'discharge',
+        16_200 + timeS,
+        timeS,
+        timeS === 0 ? 2.8 : timeS === 1200 ? 1.5 : 1.8,
+        -0.0002,
+        timeS / 3600,
+      ),
+    );
+    sequence += 1;
+  }
+  for (let timeS = 0; timeS <= 14_400; timeS += 600) {
+    rows.push(makeRow(sequence, 'post-rest-2', '3', 'rest', 17_400 + timeS, timeS, 1.6, 0));
+    sequence += 1;
+  }
+  for (let timeS = 0; timeS <= 300; timeS += 10) {
+    rows.push(makeRow(sequence, 'pre-rest-3', '1', 'rest', 31_800 + timeS, timeS, 2, 0));
+    sequence += 1;
+  }
+  for (let timeS = 0; timeS <= 1200; timeS += 100) {
+    rows.push(
+      makeRow(
+        sequence,
+        'pulse-3',
+        '2',
+        'discharge',
+        32_100 + timeS,
+        timeS,
+        timeS === 0 ? 2 : timeS === 1200 ? 1.5 : 1.8,
+        -0.0002,
+        timeS / 3600,
+      ),
+    );
+    sequence += 1;
+  }
+  for (let timeS = 0; timeS <= 14_400; timeS += 600) {
+    rows.push(makeRow(sequence, 'post-rest-3', '3', 'rest', 33_300 + timeS, timeS, 1.3, 0));
+    sequence += 1;
+  }
+  return { ...base, rows };
+}
+
 describe('analysis recipe integration', () => {
   it('uses a resolved recipe mass ahead of Neware metadata and keeps its provenance auditable', () => {
     const dataset = cfxGittDataset();
@@ -212,5 +269,65 @@ describe('analysis recipe integration', () => {
 
     expect(first.configHash).not.toBe(changed.configHash);
     expect(first.analysisInputHash).not.toBe(changed.analysisInputHash);
+  });
+
+  it('records an optional manual regression window without changing the preset set', () => {
+    const specs = buildGittRegressionWindowSpecs(settings({
+      regressionManualWindow: { startS: 4, endS: 40 },
+    }));
+
+    expect(specs.map((spec) => spec.id)).toEqual([
+      'legacy_first_5',
+      'cfx_10s',
+      'manual',
+    ]);
+    expect(specs.at(-1)).toMatchObject({
+      kind: 'fixed_time',
+      startS: 4,
+      endS: 40,
+    });
+  });
+
+  it('keeps the endpoint result unchanged when a manual validation window is enabled', () => {
+    const dataset = cfxGittDataset();
+    const baseline = analyzeNewareDataset(dataset, settings());
+    const withManualWindow = analyzeNewareDataset(dataset, settings({
+      regressionManualWindow: { startS: 0, endS: 500 },
+    }));
+
+    expect(withManualWindow.gittResults[0]?.regressionWindows.map((window) => window.windowId)).toEqual([
+      'legacy_first_5',
+      'cfx_10s',
+      'manual',
+    ]);
+    expect(withManualWindow.gittResults[0]?.regressionWindows.at(-1)).toMatchObject({
+      requestedStartS: 0,
+      requestedEndS: 500,
+    });
+    expect(withManualWindow.gittResults[0]?.metricValueCm2PerS).toBe(
+      baseline.gittResults[0]?.metricValueCm2PerS,
+    );
+    expect(withManualWindow.gittResults[0]?.deltaEtV).toBe(baseline.gittResults[0]?.deltaEtV);
+    expect(withManualWindow.gittResults[0]?.deltaEsV).toBe(baseline.gittResults[0]?.deltaEsV);
+    expect(withManualWindow.gittResults[0]?.medianVoltageV).toBe(baseline.gittResults[0]?.medianVoltageV);
+  });
+
+  it('uses the high-rate median floor after protocol cutoff without changing protocol classification', () => {
+    const analysis = analyzeNewareDataset(
+      cfxGittDatasetWithPostCutoffCycle(),
+      settings({
+        activeMassOverrideG: 0.0003,
+        activeMassSourceId: 'fixture',
+      }),
+    );
+
+    expect(analysis.gittResults).toHaveLength(3);
+    expect(analysis.cfxLiterature1200s?.programExecution.allEvents).toHaveLength(3);
+    expect(analysis.cfxLiterature1200s?.comparativeProfile.pulses).toHaveLength(3);
+    expect(analysis.cfxLiterature1200s?.comparativeProfile.pulses[2]).toMatchObject({
+      eventClassification: 'post_protocol_cutoff',
+      displayComparisonEligibility: 'included',
+      auditDAppCandidateCm2PerS: expect.any(Number),
+    });
   });
 });

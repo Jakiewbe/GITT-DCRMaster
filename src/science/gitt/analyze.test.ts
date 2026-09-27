@@ -11,7 +11,6 @@ const L_EQUIVALENT_CM = 5e-4;
 const PULSE_DURATION_S = 100;
 const DELTA_ES_V = 0.02;
 const EXACT_SLOPE = 0.0112837916709551;
-const EXACT_ENDPOINT_METRIC = 1.2345679012345679e-10;
 const TIME_RESOLUTION_NS = 1_000_000_000n;
 
 type InputOptions = {
@@ -135,6 +134,7 @@ function makeInput(options: InputOptions = {}): GittPulseInputV1 {
     material,
     config: {
       qcPolicyId: GITT_QC_POLICY_V1.id,
+      currentResolutionA: 1e-9,
       voltageResolutionV: 1e-7,
       fitWindowOverride: null,
       qrefAh: options.qrefAh === undefined ? 1 : options.qrefAh,
@@ -152,24 +152,85 @@ function expectClose(actual: number | null, expected: number, rtol: number, atol
 }
 
 describe('GITT V1 WH planar manual endpoint method', () => {
+  it('uses the loaded t=0 pulse record for the primary Endpoint', () => {
+    const result = analyzeGittPulse(makeInput({ pulseTimes: [0, 10, 20, 30] }));
+
+    expect(result.pulseStartVoltageV).toBeCloseTo(3.005, 12);
+    expect(result.deltaEtV).toBeCloseTo(
+      (3.005 + EXACT_SLOPE * Math.sqrt(30)) - 3.005,
+      12,
+    );
+    expect((result as unknown as { pulseT0VoltageV: number }).pulseT0VoltageV).toBeCloseTo(3.005, 12);
+  });
+
+  it('reports CFx 10 s window diagnostics separately from the Endpoint result', () => {
+    const result = analyzeGittPulse(makeInput({ pulseTimes: [0, 10, 20, 30, 40, 50, 60, 70] }));
+    const legacy = result.regressionWindows.find((window) => window.windowId === 'legacy_first_5');
+    const cfx10s = result.regressionWindows.find((window) => window.windowId === 'cfx_10s');
+
+    expect(cfx10s?.actualStartS).toBe(10);
+    expect(cfx10s?.actualEndS).toBe(60);
+    expect(cfx10s?.uniqueTimePointCount).toBe(6);
+    expect(cfx10s?.samplingCoverage).toBe('full');
+    expect(result.windowStabilityDecades).toBeCloseTo(
+      Math.abs(Math.log10(cfx10s?.metricValueCm2PerS as number) - Math.log10(legacy?.metricValueCm2PerS as number)),
+      12,
+    );
+    expect(result.methodDivergenceDecades).toBeCloseTo(
+      Math.log10(cfx10s?.metricValueCm2PerS as number) - Math.log10(result.metricValueCm2PerS as number),
+      12,
+    );
+    expect(result.absMethodDivergenceDecades).toBeCloseTo(
+      Math.abs(result.methodDivergenceDecades as number),
+      12,
+    );
+    expect(result.endpointStartTemporalResolutionS).toBe(10);
+    expect(result.initialObservedDropV).toBeCloseTo(
+      (result.preRestEndPotentialV as number) - (result.firstPositivePulseVoltageV as number),
+      12,
+    );
+  });
+
+  it('leaves onset diagnostics unavailable when no positive-time pulse sample exists', () => {
+    const result = analyzeGittPulse(makeInput({ pulseTimes: [0] }));
+    expect(result.endpointStartTemporalResolutionS).toBeNull();
+    expect(result.initialObservedDropV).toBeNull();
+    expect(result.windowStabilityDecades).toBeNull();
+    expect(result.methodDivergenceDecades).toBeNull();
+    expect(result.absMethodDivergenceDecades).toBeNull();
+  });
+
   it('recovers the exact scalar oracle from the operator endpoint formula', () => {
     const result = analyzeGittPulse(makeInput());
 
     expect(result.calculationState).toBe('computed');
     expect(result.qcStatus).toBe('review');
-    expectClose(result.metricValueCm2PerS, EXACT_ENDPOINT_METRIC, 1e-10, 1e-16);
-    expectClose(result.diagnosticCandidateMetricValueCm2PerS, EXACT_ENDPOINT_METRIC, 1e-10, 1e-16);
+    expectClose(result.metricValueCm2PerS, 1e-10, 1e-10, 1e-16);
+    expectClose(result.diagnosticCandidateMetricValueCm2PerS, 1e-10, 1e-10, 1e-16);
+    expectClose(result.regressionCandidateMetricValueCm2PerS, 1e-10, 1e-10, 1e-16);
+    expect(result.regressionWindows.map((window) => window.windowId)).toEqual([
+      'legacy_first_5',
+      'cfx_10s',
+    ]);
+    expectClose(
+      result.regressionWindows[0]?.metricValueCm2PerS ?? null,
+      result.regressionCandidateMetricValueCm2PerS as number,
+      1e-12,
+      1e-16,
+    );
+    expect(result.regressionWindowSensitivity?.finitePositiveWindowCount).toBe(2);
     expectClose(result.activeMaterialEquivalentThicknessCm, L_EQUIVALENT_CM, 1e-12, 1e-16);
-    expectClose(result.dimensionlessPulseTime, 0.0493827160493827, 1e-10, 1e-14);
+    expectClose(result.dimensionlessPulseTime, 0.04, 1e-10, 1e-14);
     expectClose(result.predictedDeltaEAtTauV, EXACT_SLOPE * 10, 1e-12, 1e-14);
-    expectClose(result.observedDeltaEAtTauV, EXACT_SLOPE * 9, 1e-12, 1e-14);
-    expectClose(result.deltaEtV, EXACT_SLOPE * 9, 1e-12, 1e-14);
-    expect(result.pulseStartVoltageV).toBeCloseTo(3.005 + EXACT_SLOPE, 12);
+    expectClose(result.observedDeltaEAtTauV, EXACT_SLOPE * 10, 1e-12, 1e-14);
+    expectClose(result.deltaEtV, EXACT_SLOPE * 10, 1e-12, 1e-14);
+    expect(result.pulseStartVoltageV).toBeCloseTo(3.005, 12);
     expect(result.calculationMethod).toBe('wh_planar_manual_endpoint');
-    expect(result.endpointConsistencyRelativeError).toBeCloseTo(0.1, 12);
+    expect(result.endpointConsistencyRelativeError).toBeCloseTo(0, 12);
+    expect(result.fitDiagnostics.windowSelectionMode).toBe('fixed_first_five');
     expect(result.fitDiagnostics.actualFitWindow?.startS).toBe(1);
-    expect(result.fitDiagnostics.actualFitWindow?.endS).toBe(35);
-    expect(result.fitDiagnostics.fitUniqueTickCount).toBe(35);
+    expect(result.fitDiagnostics.actualFitWindow?.endS).toBe(5);
+    expect(result.fitDiagnostics.fitUniqueTickCount).toBe(5);
     expect(result.pulseBaselineExtrapolatedV).toBeCloseTo(3.005, 12);
     expect(result.metricStandardUncertainty).not.toBeNull();
     expect(result.sensitivities).toEqual({
@@ -205,10 +266,10 @@ describe('GITT V1 WH planar manual endpoint method', () => {
 
   it('gives one regression weight to a duplicate tick while preserving all contributing row ids', () => {
     const duplicated = makeInput();
-    const original = duplicated.pulseRows.find((row) => row.stepElapsedTimeTicks === 10n) as CanonicalRowV1;
+    const original = duplicated.pulseRows.find((row) => row.stepElapsedTimeTicks === 1n) as CanonicalRowV1;
     duplicated.pulseRows.push({
       ...original,
-      rowId: 'duplicate-at-10s',
+      rowId: 'duplicate-at-1s',
       sourceRowIndex: 99_001n,
       sourceRecordSequence: 99_001n,
       recordSequence: 99_001n,
@@ -216,7 +277,7 @@ describe('GITT V1 WH planar manual endpoint method', () => {
     });
 
     const averaged = makeInput();
-    const averagedPoint = averaged.pulseRows.find((row) => row.stepElapsedTimeTicks === 10n) as CanonicalRowV1;
+    const averagedPoint = averaged.pulseRows.find((row) => row.stepElapsedTimeTicks === 1n) as CanonicalRowV1;
     averagedPoint.voltageV += 1e-8;
 
     const duplicateResult = analyzeGittPulse(duplicated);
@@ -231,7 +292,11 @@ describe('GITT V1 WH planar manual endpoint method', () => {
     expect(duplicateResult.fitDiagnostics.fitSourceRowCount).toBe(
       averagedResult.fitDiagnostics.fitSourceRowCount + 1,
     );
-    expect(duplicateResult.fitDiagnostics.fitContributingRowIds).toContain('duplicate-at-10s');
+    const duplicateLegacyWindow = duplicateResult.regressionWindows.find((window) => window.windowId === 'legacy_first_5');
+    const averagedLegacyWindow = averagedResult.regressionWindows.find((window) => window.windowId === 'legacy_first_5');
+    expect(duplicateLegacyWindow?.uniqueTimePointCount).toBe(averagedLegacyWindow?.uniqueTimePointCount);
+    expect(duplicateLegacyWindow?.pointCount).toBe((averagedLegacyWindow?.pointCount ?? 0) + 1);
+    expect(duplicateResult.fitDiagnostics.fitContributingRowIds).toContain('duplicate-at-1s');
     expect(duplicateResult.qcCodes).not.toContain('fit_duplicate_tick_voltage_conflict');
   });
 
@@ -261,15 +326,18 @@ describe('GITT V1 WH planar manual endpoint method', () => {
     expect(result.qcStatus).toBe('rejected');
     expect(result.qcCodes).toContain('pre_rest_end_stability');
     expect(result.diagnosticCandidateMetricValueCm2PerS).not.toBeNull();
+    expect(result.regressionCandidateMetricValueCm2PerS).not.toBeNull();
     expect(result.metricValueCm2PerS).not.toBeNull();
   });
 
   it('still calculates the endpoint result when the auxiliary fit window has too few ticks', () => {
-    const result = analyzeGittPulse(makeInput({ pulseTimes: [0, 10, 20, 30, 40, 100] }));
+    const result = analyzeGittPulse(makeInput({ pulseTimes: [0, 10, 20, 30, 40] }));
     expect(result.calculationState).toBe('computed');
     expect(result.metricValueCm2PerS).not.toBeNull();
-    expect(result.qcCodes).toContain('automatic_fit_sampling_infeasible');
-    expect(result.fitDiagnostics.expectedUniquePointsInFitWindow).toBe(3);
+    expect(result.qcCodes).toContain('fixed_fit_sampling_infeasible');
+    expect(result.fitDiagnostics.expectedUniquePointsInFitWindow).toBe(4);
+    expect(result.regressionWindows.every((window) => window.status === 'infeasible')).toBe(true);
+    expect(result.regressionWindows.every((window) => window.metricValueCm2PerS === null)).toBe(true);
   });
 
   it('keeps the endpoint result when the auxiliary regression diagnoses strong curvature', () => {
@@ -278,16 +346,16 @@ describe('GITT V1 WH planar manual endpoint method', () => {
     expect(result.fitDiagnostics.rSquared).toBeGreaterThan(0.98);
     expect(result.qcStatus).toBe('rejected');
     expect(result.metricValueCm2PerS).not.toBeNull();
-    expect(result.qcCodes).toContain('automatic_fit_no_window_passed_hard_gates');
+    expect(result.qcCodes).toContain('fixed_fit_no_window_passed_hard_gates');
     expect(result.qcCodes).toContain('fit_curvature_metric');
   });
 
   it('uses complete pulse duration as the governing finite-diffusion check', () => {
     const result = analyzeGittPulse(makeInput({ targetMetric: 6e-10 }));
-    expectClose(result.diagnosticCandidateMetricValueCm2PerS, 6e-10, 1e-10, 1e-16);
-    expectClose(result.dimensionlessPulseTime, 0.24, 1e-10, 1e-13);
-    expectClose(result.dimensionlessFitTime, 0.084, 1e-10, 1e-13);
-    expect(result.qcStatus).toBe('rejected');
+    expectClose(result.diagnosticCandidateMetricValueCm2PerS, 4.86e-10, 1e-10, 1e-16);
+    expectClose(result.dimensionlessPulseTime, 0.1944, 1e-10, 1e-13);
+    expectClose(result.dimensionlessFitTime, 0.00972, 1e-10, 1e-13);
+    expect(result.qcStatus).toBe('review');
     expect(result.qcCodes).toContain('dimensionless_pulse_time');
   });
 

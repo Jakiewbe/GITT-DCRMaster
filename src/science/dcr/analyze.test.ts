@@ -339,3 +339,120 @@ describe('DCR_REST_TO_PULSE_EXACT_TICK V1', () => {
     expect(analyzeDcrEventV1(makeEvent({ protocolRole: 'unknown' }))).toEqual([]);
   });
 });
+
+describe('DCR_TWO_CURRENT_TERMINAL V1', () => {
+  it('uses the terminal voltage of the small- and large-current discharge stages', () => {
+    const event: DcrEventInputV1 = {
+      eventId: 'paper-event-1',
+      preRestRows: [],
+      pulseRows: [],
+      smallDischargeRows: [
+        row({ id: 'small-1', absoluteTicks: 200n, stepTicks: 0n, sequence: 200n, voltageV: 3.0, currentA: -0.1, stepType: 'discharge', stepId: 'small' }),
+        row({ id: 'small-2', absoluteTicks: 210n, stepTicks: 10n, sequence: 201n, voltageV: 2.98, currentA: -0.1, stepType: 'discharge', stepId: 'small' }),
+        row({ id: 'small-3', absoluteTicks: 220n, stepTicks: 20n, sequence: 202n, voltageV: 2.95, currentA: -0.1, stepType: 'discharge', stepId: 'small' }),
+      ],
+      largeDischargeRows: [
+        row({ id: 'large-1', absoluteTicks: 260n, stepTicks: 0n, sequence: 260n, voltageV: 2.8, currentA: -0.5, stepType: 'discharge', stepId: 'large' }),
+        row({ id: 'large-2', absoluteTicks: 270n, stepTicks: 10n, sequence: 261n, voltageV: 2.7, currentA: -0.5, stepType: 'discharge', stepId: 'large' }),
+        row({ id: 'large-3', absoluteTicks: 280n, stepTicks: 20n, sequence: 262n, voltageV: 2.6, currentA: -0.5, stepType: 'discharge', stepId: 'large' }),
+      ],
+      protocolRole: 'dcr_pulse',
+      config: {
+        qcPolicyId: 'DCR_QC_POLICY_1_0_0',
+        currentResolutionA: 1e-6,
+        voltageResolutionV: 1e-6,
+        requestedMetrics: [{ kind: 'two_current_terminal', label: 'DCR_terminal' }],
+        transitionLatencyKnown: true,
+        transitionTimeBasis: 'step_boundary_tick',
+        expectedPulseDurationS: null,
+        calculationMethod: 'two_current_terminal_v1',
+      },
+    };
+
+    const [result] = analyzeDcrEventV1(event);
+    expect(result.calculationState).toBe('computed');
+    expect(result.qcStatus).toBe('valid');
+    expect(result.requestedMetric).toBe('DCR_terminal');
+    expect(result.smallTerminalRowId).toBe('small-3');
+    expect(result.largeTerminalRowId).toBe('large-3');
+    expect(result.smallTerminalVoltageV).toBe(2.95);
+    expect(result.largeTerminalVoltageV).toBe(2.6);
+    expect(result.smallCurrentA).toBe(-0.1);
+    expect(result.largeCurrentA).toBe(-0.5);
+    expect(result.deltaVoltageV).toBeCloseTo(0.35, 12);
+    expect(result.deltaCurrentA).toBeCloseTo(0.4, 12);
+    expect(result.resistanceOhm).toBeCloseTo(0.875, 12);
+  });
+
+  it('orders terminal rows by physical time when tick resolutions differ', () => {
+    const event: DcrEventInputV1 = {
+      eventId: 'paper-event-resolution',
+      preRestRows: [],
+      pulseRows: [],
+      smallDischargeRows: [
+        row({ id: 'small-1', absoluteTicks: 1_000n, stepTicks: 0n, sequence: 1n, resolutionNs: 1_000_000n, voltageV: 3.0, currentA: -0.1, stepType: 'discharge', stepId: 'small' }),
+        row({ id: 'small-2', absoluteTicks: 2n, stepTicks: 1n, sequence: 2n, resolutionNs: 1_000_000_000n, voltageV: 2.9, currentA: -0.1, stepType: 'discharge', stepId: 'small' }),
+      ],
+      largeDischargeRows: [
+        row({ id: 'large-1', absoluteTicks: 1_000n, stepTicks: 0n, sequence: 3n, resolutionNs: 1_000_000n, voltageV: 2.8, currentA: -0.5, stepType: 'discharge', stepId: 'large' }),
+        row({ id: 'large-2', absoluteTicks: 2n, stepTicks: 1n, sequence: 4n, resolutionNs: 1_000_000_000n, voltageV: 2.7, currentA: -0.5, stepType: 'discharge', stepId: 'large' }),
+      ],
+      protocolRole: 'dcr_pulse',
+      config: {
+        qcPolicyId: 'DCR_QC_POLICY_1_0_0',
+        currentResolutionA: 1e-6,
+        voltageResolutionV: 1e-6,
+        requestedMetrics: [{ kind: 'two_current_terminal', label: 'DCR_terminal' }],
+        transitionLatencyKnown: true,
+        transitionTimeBasis: 'step_boundary_tick',
+        expectedPulseDurationS: null,
+        calculationMethod: 'two_current_terminal_v1',
+      },
+    };
+
+    const [result] = analyzeDcrEventV1(event);
+    expect(result.smallTerminalRowId).toBe('small-2');
+    expect(result.largeTerminalRowId).toBe('large-2');
+    expect(result.resistanceOhm).toBeCloseTo(0.5, 12);
+  });
+
+  it('rejects an invalid terminal record instead of silently using an earlier row', () => {
+    const event: DcrEventInputV1 = {
+      eventId: 'paper-event-invalid-terminal',
+      preRestRows: [],
+      pulseRows: [],
+      smallDischargeRows: [
+        row({ id: 'small-valid', absoluteTicks: 1n, stepTicks: 0n, sequence: 1n, voltageV: 3.0, currentA: -0.1, stepType: 'discharge', stepId: 'small' }),
+        row({ id: 'small-invalid-terminal', absoluteTicks: 2n, stepTicks: 1n, sequence: 2n, voltageV: Number.NaN, currentA: -0.1, stepType: 'discharge', stepId: 'small' }),
+      ],
+      largeDischargeRows: [
+        row({ id: 'large-terminal', absoluteTicks: 2n, stepTicks: 1n, sequence: 3n, voltageV: 2.5, currentA: -0.5, stepType: 'discharge', stepId: 'large' }),
+      ],
+      protocolRole: 'dcr_pulse',
+      config: {
+        qcPolicyId: 'DCR_QC_POLICY_1_0_0',
+        currentResolutionA: 1e-6,
+        voltageResolutionV: 1e-6,
+        requestedMetrics: [{ kind: 'two_current_terminal', label: 'DCR_terminal' }],
+        transitionLatencyKnown: true,
+        transitionTimeBasis: 'step_boundary_tick',
+        expectedPulseDurationS: null,
+        calculationMethod: 'two_current_terminal_v1',
+      },
+    };
+
+    const [result] = analyzeDcrEventV1(event);
+    expect(result.calculationState).toBe('not_computable');
+    expect(result.resistanceOhm).toBeNull();
+    expect(result.qcCodes).toContain('small_current_terminal_invalid');
+  });
+
+  it('does not reinterpret legacy timepoint metrics as terminal-voltage DCR', () => {
+    const event = makeEvent({ requestedMetrics: [{ kind: 'first_sample' }] });
+    event.smallDischargeRows = [row({ id: 'small', absoluteTicks: 1n, stepTicks: 0n, sequence: 1n, voltageV: 3, currentA: -0.1, stepType: 'discharge', stepId: 'small' })];
+    event.largeDischargeRows = [row({ id: 'large', absoluteTicks: 2n, stepTicks: 0n, sequence: 2n, voltageV: 2.8, currentA: -0.5, stepType: 'discharge', stepId: 'large' })];
+    event.config.calculationMethod = 'two_current_terminal_v1';
+
+    expect(analyzeDcrEventV1(event)).toEqual([]);
+  });
+});

@@ -2,8 +2,10 @@
 
 The TypeScript scientific algorithms remain in the frontend bundle and are not
 migrated to Rust. The desktop capability set is deliberately limited to
-`core:default`; file import/export currently uses user-initiated webview file
-controls.
+`core:default`; file import remains user-initiated webview file input, while
+CSV, XLSX, Manifest and project exports use the native `write_export_chunk`
+command and are written to the current user's `Downloads` folder in bounded
+chunks. The browser build keeps the Blob download path.
 
 Windows builds use `scripts/tauri-d-drive.ps1`. By default it keeps all heavy
 build state under `D:\GITTDCR-Build`:
@@ -36,7 +38,7 @@ The source repository is never moved. Do not mark a package as
 release-qualified until clean Windows 10/11 installation, offline
 recomputation, upgrade, and uninstall tests pass.
 
-## Verified local build status (2026-07-18)
+## Verified local build status (2026-09-18)
 
 - Tauri CLI `2.11.4`, Rust `1.95.0`, and WebView2 `150.0.4078.65` are detected.
 - Visual Studio Build Tools `17.14.36`, MSVC `19.44`, and Windows SDK

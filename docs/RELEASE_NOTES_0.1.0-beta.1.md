@@ -7,13 +7,16 @@
 ## 主要能力
 
 - 直接读取 Neware NDAX；DCR 导入后零配置分析。
-- GITT 自动识别 CFₓ/FGS、1200 s 脉冲、1.5 V 截止和 4 h 静置。
+- GITT 自动识别 CFₓ/FGS、1200 s 脉冲、1.5 V 截止和 4 h 静置；`Stop_Volt≈1.5 V` 仍用于标记早停/后续协议状态，但后处理主比较改由 `comparisonTargetMedianVoltageV=1.50 V` 筛选，不再全局截断首次截止后的可识别事件。
 - 用户只需确认或修改极片单面几何、活性物质质量、材料密度和摩尔质量；不填写误差率、不确定度、仪器分辨率、噪声或 QC 阈值。
 - CF₁ 默认比较密度为 `2.25 g/cm³`，理论比容量为 `865 mAh/g`。
-- GITT 正式科学内核仅使用平面 Weppner–Huggins `4/π` 与 `E–√t` 回归主算法。
+- GITT 正式科学内核使用平面 Weppner–Huggins `4/π` 端点公式；辅助 `E–√t` 图去掉首点后固定拟合后续 5 个唯一时间点。
 - CFₓ 主名称统一为“WH 平面模型表观传输比较指标”，解释范围固定为 `limited + comparative_index_only`。
-- DCR 使用 Rest 最后一条实测记录和 exact integer tick，输出首采样、5 s、10 s 与 30 s 表观脉冲电阻。
+- DCR 使用小电流放电 → 静置 → 大电流放电阶段的终止电压和阶段电流中位数，按 `R=(E1-E2)/(I1-I2)` 计算论文法 DCR。
 - CSV、XLSX、Manifest 使用统一导出模型，并保留物理参数、结果状态、哈希、版本和解释边界。
+- 报告页新增单独导出 DCR、单独导出 GITT；项目 XLSX 按结果、完整曲线、脉冲响应、`E–√t`、D-电压等用途分 sheet，并统一使用带单位的作图列名。
+- GITT 电压–Dli 图增加纵轴刻度翻转按钮，默认匹配论文示例的 `1E-17` 到 `1E-9` 显示方向。
+- CFₓ 主 `D_app–中值电压` 图使用 `comparisonTargetMedianVoltageV=1.50 V`；它与真实 `1.5 V` 终端协议截止分开记录。低于目标、早停和协议截止后的结果不删除，继续进入 Summary、审计、脉冲详情和导出；协议截止后的脉冲若 4 h 静置完成且中值电压仍不低于目标，可进入主图，并标记 `displayComparisonEligibility` / `post_protocol_cutoff`。
 
 ## 已知限制
 

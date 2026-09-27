@@ -21,6 +21,7 @@
     "tauri:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tauri-d-drive.ps1 -Action build"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.11.0",
     "@zip.js/zip.js": "^2.8.31",
     "lucide-react": "^1.16.0",
     "react": "^19.2.6",

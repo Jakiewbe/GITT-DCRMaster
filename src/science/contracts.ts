@@ -1,5 +1,18 @@
 export type CalculationState = 'computed' | 'not_computable' | 'not_requested';
 export type QcStatus = 'valid' | 'review' | 'rejected';
+export type QcReasonSeverityV1 = 'info' | 'review' | 'reject';
+export type QcReasonDomainV1 =
+  | 'data'
+  | 'protocol'
+  | 'endpoint_model'
+  | 'cfx10_slope'
+  | 'sampling'
+  | 'material_input';
+
+export type PrimaryComparisonEligibilityV1 =
+  | 'included'
+  | 'included_with_warnings'
+  | 'excluded';
 
 export type ScientificResultStateV1 = {
   calculationState: CalculationState;
@@ -24,6 +37,7 @@ export type ModelAssessmentV1 = {
  */
 export type MeasurementResolutionSourceV1 =
   | 'vendor_profile_declared'
+  | 'vendor_oracle_validated_raw_code_lsb'
   | 'record_storage_float32_full_scale_bound'
   | 'advanced_user_override'
   | 'unavailable';
@@ -134,6 +148,22 @@ export type QcFinding = {
   status: QcStatus;
   metric?: number | null;
   message?: string;
+  severity?: QcReasonSeverityV1;
+  domain?: QcReasonDomainV1;
+  value?: number | null;
+  threshold?: number | null;
+  sourceRule?: string;
+};
+
+/** Stable, exportable explanation for a QC decision. */
+export type QcReasonV1 = {
+  code: string;
+  severity: QcReasonSeverityV1;
+  domain: QcReasonDomainV1;
+  value: number | null;
+  threshold: number | null;
+  sourceRule: string;
+  message: string;
 };
 
 export type RestDiagnosticsV1 = ScientificResultStateV1 & {
@@ -147,17 +177,108 @@ export type RestDiagnosticsV1 = ScientificResultStateV1 & {
   contributingRowIds: string[];
 };
 
+export type RestEndSensitivityAuditV1 = {
+  /** Actual formal tail duration: min(rest duration, max(60 s, 20% duration)). */
+  restEndCurrentWindowS: number | null;
+  restEndCurrentWindowV: number | null;
+  restEnd15minV: number | null;
+  restEnd5minV: number | null;
+  /** Final CanonicalRow voltage, kept outside the robust-estimator spread. */
+  restEndRawLastPointV: number | null;
+  restEndCurrentVs15minV: number | null;
+  restEnd15minVs5minV: number | null;
+  restEndCurrentVs5minV: number | null;
+  restEnd5minVsRawV: number | null;
+  /** Spread of current, 15 min, and 5 min robust estimates only. */
+  restEndRobustSpreadV: number | null;
+};
+
+export type GittRestEndSensitivityAuditV1 = {
+  preRest: RestEndSensitivityAuditV1;
+  postRest: RestEndSensitivityAuditV1;
+  deltaEsCurrentV: number | null;
+  deltaEs15minV: number | null;
+  deltaEs5minV: number | null;
+  dCurrentCm2PerS: number | null;
+  d15minCm2PerS: number | null;
+  d5minCm2PerS: number | null;
+  log10DCurrentVs15min: number | null;
+  log10D15minVs5min: number | null;
+  log10DCurrentVs5min: number | null;
+};
+
 export type FitWindowOverrideV1 = {
   startElapsedTimeTicks: bigint;
   endElapsedTimeTicks: bigint;
   reason: string;
 };
 
+export type GittRegressionWindowSpecV1 =
+  | {
+      kind: 'legacy_first_5';
+      id: 'legacy_first_5';
+      label: string;
+    }
+  | {
+      kind: 'fixed_time';
+      id: string;
+      label: string;
+      startS: number;
+      endS: number;
+      /** Lower bound defaults to inclusive for existing research windows. */
+      startBoundary?: 'inclusive' | 'exclusive';
+    };
+
+export type GittRegressionWindowStatusV1 = 'valid' | 'review' | 'infeasible';
+export type GittRegressionWindowSamplingCoverageV1 =
+  | 'full'
+  | 'partial'
+  | 'infeasible'
+  | 'not_applicable';
+export type GittRegressionWindowLinearityClassV1 =
+  | 'strong_linearity'
+  | 'acceptable_review'
+  | 'early_response_nonlinear'
+  | 'unavailable';
+
+export type GittRegressionWindowResultV1 = {
+  windowId: string;
+  windowLabel: string;
+  kind: GittRegressionWindowSpecV1['kind'];
+  requestedStartS: number | null;
+  requestedEndS: number | null;
+  actualStartS: number | null;
+  actualEndS: number | null;
+  pointCount: number;
+  uniqueTimePointCount: number;
+  fitDurationS: number | null;
+  fitEndFractionOfPulse: number | null;
+  slopeVPerSqrtS: number | null;
+  interceptV: number | null;
+  rSquared: number | null;
+  rmseV: number | null;
+  slopeStdError: number | null;
+  curvatureMetric: number | null;
+  maxNormalizedResidual: number | null;
+  monotonicityRatio: number | null;
+  durbinWatson: number | null;
+  metricValueCm2PerS: number | null;
+  windowCoverageIncomplete: boolean;
+  samplingCoverage: GittRegressionWindowSamplingCoverageV1;
+  linearityClass: GittRegressionWindowLinearityClassV1;
+  status: GittRegressionWindowStatusV1;
+  warnings: string[];
+};
+
 export type GittAnalysisConfigV1 = {
   qcPolicyId: string;
+  currentResolutionA: number | null;
+  currentResolutionEvidence?: MeasurementResolutionEvidenceV1;
   voltageResolutionV: number | null;
   voltageResolutionEvidence?: MeasurementResolutionEvidenceV1;
   fitWindowOverride: FitWindowOverrideV1 | null;
+  /** Optional multi-window validation; absent means the standard presets. */
+  regressionWindows?: GittRegressionWindowSpecV1[];
   qrefAh: number | null;
   activeMassG: number;
   /**
@@ -184,7 +305,7 @@ export type GittPulseInputV1 = {
 export type GittFitDiagnosticsV1 = {
   requestedFitWindow: { startS: number; endS: number } | null;
   actualFitWindow: { startS: number; endS: number } | null;
-  windowSelectionMode: 'automatic' | 'manual';
+  windowSelectionMode: 'fixed_first_five' | 'manual';
   manualOverrideReason: string | null;
   expectedUniquePointsInFitWindow: number;
   minimumSamplingFrequencyRequiredHz: number | null;
@@ -210,6 +331,18 @@ export type GittResultV1 = ScientificResultStateV1 &
     calculationMethod: 'wh_planar_manual_endpoint';
     metricValueCm2PerS: number | null;
     diagnosticCandidateMetricValueCm2PerS: number | null;
+    /** Independent E-versus-sqrt(t) diagnostic using the fitted slope at tau. */
+    regressionCandidateMetricValueCm2PerS: number | null;
+    /** Difference between the legacy five-point and CFx 10 s slope diagnostics. */
+    windowStabilityDecades: number | null;
+    /** Signed log-space difference between CFx 10 s slope D and Endpoint D. */
+    methodDivergenceDecades: number | null;
+    absMethodDivergenceDecades: number | null;
+    regressionWindows: GittRegressionWindowResultV1[];
+    regressionWindowSensitivity: {
+      log10DRange: number | null;
+      finitePositiveWindowCount: number;
+    } | null;
     /** Active-material mass actually used to derive L_equivalent. */
     activeMassG: number | null;
     /** Source identifier paired with the mass used above. */
@@ -220,10 +353,39 @@ export type GittResultV1 = ScientificResultStateV1 &
     fitEndTimeS: number | null;
     preRestEndPotentialV: number | null;
     postRestEndPotentialV: number | null;
+    /** Diagnostic-only Rest-end window sensitivity; never feeds formal ΔEs or D. */
+    restEndSensitivityAudit: GittRestEndSensitivityAuditV1;
+    /** First physical pulse-time record with finite, direction-compatible loaded current. */
+    pulseT0VoltageV: number | null;
+    pulseT0CurrentA: number | null;
+    /** New primary endpoint start time; present only when a qualified t=0 exists. */
+    endpointStartTimeS: number | null;
+    /** Time of the first observed positive-time loaded pulse point, retained for diagnostics. */
+    firstPositivePulseTimeS: number | null;
+    firstPositivePulseVoltageV: number | null;
+    /** Time of the first observed positive-time loaded pulse point. */
+    endpointStartTemporalResolutionS: number | null;
+    /** @deprecated Alias retaining the old pre-rest to first-positive-time semantics. */
+    initialObservedDropV: number | null;
+    onsetObservedDropV: number | null;
+    earlyPolarizationDropV: number | null;
+    preRestToFirstPositiveDropV: number | null;
+    /** Neware mid-voltage: voltage at 50% of this pulse's capacity change. */
+    medianVoltageV: number | null;
     deltaEsV: number | null;
+    preRestLastRawVoltageV: number | null;
+    postRestLastRawVoltageV: number | null;
+    deltaEsRawV: number | null;
+    restEstimatorDifferencePreV: number | null;
+    restEstimatorDifferencePostV: number | null;
+    /** @deprecated Compatibility alias for the primary loaded t=0 voltage. */
     pulseStartVoltageV: number | null;
     pulseEndVoltageV: number | null;
     deltaEtV: number | null;
+    legacyFirstPositiveDeltaEtV: number | null;
+    legacyFirstPositiveEndpointMetricValueCm2PerS: number | null;
+    deltaEtDefinitionDifferenceV: number | null;
+    endpointDRatioVsLegacy: number | null;
     pulseBaselineExtrapolatedV: number | null;
     predictedDeltaEAtTauV: number | null;
     observedDeltaEAtTauV: number | null;
@@ -257,11 +419,24 @@ export type GittResultV1 = ScientificResultStateV1 &
     postRestDiagnostics: RestDiagnosticsV1;
     fitDiagnostics: GittFitDiagnosticsV1;
     qcFindings: QcFinding[];
+    /** Primary endpoint quality, separate from the deprecated aggregate qcStatus. */
+    primaryEndpointQcStatus: QcStatus;
+    primaryEndpointQcReasons: QcReasonV1[];
+    /** Quality of the CFx10s auxiliary slope only. */
+    cfx10SlopeQcStatus: GittRegressionWindowStatusV1;
+    cfx10SlopeQcReasons: QcReasonV1[];
+    /** Endpoint-only eligibility; CFx product protocol may further exclude it. */
+    primaryComparisonEligibility: PrimaryComparisonEligibilityV1;
   };
 
 export type DcrRequestedMetricV1 =
   | { kind: 'first_sample' }
-  | { kind: 'exact_time'; offsetTicks: bigint; offsetResolutionNs: bigint; label: string };
+  | { kind: 'exact_time'; offsetTicks: bigint; offsetResolutionNs: bigint; label: string }
+  | { kind: 'two_current_terminal'; label: string };
+
+export type DcrCalculationMethodV1 =
+  | 'rest_to_pulse_exact_tick_v1'
+  | 'two_current_terminal_v1';
 
 export type DcrAnalysisConfigV1 = {
   qcPolicyId: string;
@@ -273,12 +448,16 @@ export type DcrAnalysisConfigV1 = {
   transitionLatencyKnown: boolean;
   transitionTimeBasis: 'vendor_command_tick' | 'step_boundary_tick' | 'first_post_record';
   expectedPulseDurationS: number | null;
+  calculationMethod?: DcrCalculationMethodV1;
 };
 
 export type DcrEventInputV1 = {
   eventId: string;
   preRestRows: CanonicalRowV1[];
   pulseRows: CanonicalRowV1[];
+  /** Paper-method inputs: terminal points are taken from these two discharge steps. */
+  smallDischargeRows?: CanonicalRowV1[];
+  largeDischargeRows?: CanonicalRowV1[];
   config: DcrAnalysisConfigV1;
   protocolRole: 'dcr_pulse' | 'conditioning' | 'unknown';
 };
@@ -301,6 +480,14 @@ export type DcrMetricResultV1 = ScientificResultStateV1 & {
   deltaCurrentA: number | null;
   resistanceOhm: number | null;
   diagnosticCandidateResistanceOhm: number | null;
+  /** Explicit paper-method fields; legacy baseline/target fields remain for compatibility. */
+  calculationMethod?: DcrCalculationMethodV1;
+  smallTerminalRowId?: string | null;
+  largeTerminalRowId?: string | null;
+  smallTerminalVoltageV?: number | null;
+  largeTerminalVoltageV?: number | null;
+  smallCurrentA?: number | null;
+  largeCurrentA?: number | null;
   baselineWindowMedianV: number | null;
   baselineLastPointMinusWindowMedianV: number | null;
   baselineFittedTransitionVoltageV: number | null;

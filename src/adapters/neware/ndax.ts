@@ -1,5 +1,13 @@
 import { Uint8ArrayReader, Uint8ArrayWriter, ZipReader } from '@zip.js/zip.js';
-import { parseNdc17Data, parseNdc17RunInfo, parseNdc17Steps, readNdcHeader } from './ndc';
+import {
+  parseNdcData,
+  parseNdcRunInfo,
+  parseNdcSteps,
+  readNdcHeader,
+  type NewareDataRecord,
+  type NewareRunInfoRecord,
+  type SupportedNewareNdcVersion,
+} from './ndc';
 
 export type NewareNdaxRecord = {
   index: number;
@@ -57,12 +65,16 @@ export type NewareProgramLoop = {
 };
 
 export type NewareNdaxMetadata = {
-  parserProfileId: 'neware-ndax-ndc17-v1';
+  /** Adapter identifier; retained here for the existing shared dataset contract. */
+  parserProfileId: string;
   /**
    * v0.1.2 retains program-condition/loop evidence used by the CFx 1200 s
-   * adapter.  v0.1.1 remains accepted for already-saved projects.
+   * adapter.  v0.1.1 remains accepted for already-saved projects.  The source
+   * NDC generation is retained separately because v14 and v17 use different
+   * binary record layouts.
    */
-  parserProfileVersion: '0.1.1-provisional' | '0.1.2-provisional';
+  parserProfileVersion: string;
+  ndcVersion?: SupportedNewareNdcVersion;
   approvalState: 'provisional';
   instrumentId: string | null;
   channelId: string | null;
@@ -202,6 +214,76 @@ function optionalXml(entries: Record<string, Uint8Array>, name: string): string 
   }
 }
 
+function interpolateRunInfo(
+  left: NewareRunInfoRecord,
+  right: NewareRunInfoRecord,
+  index: number,
+): NewareRunInfoRecord {
+  const span = right.index - left.index;
+  const fraction = span === 0 ? 0 : (index - left.index) / span;
+  const timestampDelta = right.timestampMs - left.timestampMs;
+  return {
+    index,
+    rawStep: left.rawStep,
+    stepOrdinal: left.stepOrdinal,
+    stepTimeMs: Math.round(left.stepTimeMs + (right.stepTimeMs - left.stepTimeMs) * fraction),
+    dtMs: Math.round(left.dtMs + (right.dtMs - left.dtMs) * fraction),
+    timestampMs: left.timestampMs + (timestampDelta * BigInt(index - left.index)) / BigInt(span || 1),
+    chargeCapacityAh: left.chargeCapacityAh + (right.chargeCapacityAh - left.chargeCapacityAh) * fraction,
+    dischargeCapacityAh:
+      left.dischargeCapacityAh + (right.dischargeCapacityAh - left.dischargeCapacityAh) * fraction,
+  };
+}
+
+/**
+ * NDC14 stores run-info anchors less frequently than voltage/current samples.
+ * Reconstruct the omitted rows on the physical sample index, matching the
+ * vendor-compatible interpolation boundary while keeping anchor values exact.
+ */
+function expandNdc14RunInfo(
+  anchors: NewareRunInfoRecord[],
+  data: NewareDataRecord[],
+): NewareRunInfoRecord[] {
+  if (anchors.length === 0 || data.length === 0) return [];
+  const sorted = [...anchors].sort((left, right) => left.index - right.index);
+  const anchorByIndex = new Map(sorted.map((record) => [record.index, record]));
+  const expanded: NewareRunInfoRecord[] = [];
+  let rightIndex = 0;
+
+  for (const point of data) {
+    const index = point.index;
+    while (rightIndex < sorted.length && sorted[rightIndex].index < index) rightIndex += 1;
+    const exact = anchorByIndex.get(index);
+    let timing: NewareRunInfoRecord;
+
+    if (exact) {
+      timing = exact;
+    } else if (rightIndex === 0 && sorted.length > 1) {
+      timing = interpolateRunInfo(sorted[0], sorted[1], index);
+    } else if (rightIndex >= sorted.length && sorted.length > 1) {
+      timing = interpolateRunInfo(sorted[sorted.length - 2], sorted[sorted.length - 1], index);
+      timing.rawStep = sorted[sorted.length - 1].rawStep;
+      timing.stepOrdinal = sorted[sorted.length - 1].stepOrdinal;
+    } else {
+      timing = interpolateRunInfo(sorted[rightIndex - 1], sorted[rightIndex], index);
+    }
+
+    if (!exact) {
+      const previous = expanded[expanded.length - 1];
+      if (previous) {
+        const elapsedMs = Number(timing.timestampMs - previous.timestampMs);
+        const currentA = point.currentMa / 1000;
+        const capacityAh = Math.abs(currentA) * elapsedMs / 3_600_000;
+        timing.chargeCapacityAh = previous.chargeCapacityAh + (currentA > 0 ? capacityAh : 0);
+        timing.dischargeCapacityAh = previous.dischargeCapacityAh + (currentA < 0 ? capacityAh : 0);
+      }
+    }
+    expanded.push(timing);
+  }
+
+  return expanded;
+}
+
 async function unzipEntries(input: Uint8Array): Promise<Record<string, Uint8Array>> {
   const reader = new ZipReader(new Uint8ArrayReader(input), { useWebWorkers: false });
   try {
@@ -225,27 +307,34 @@ export async function parseNewareNdax(input: ArrayBuffer | Uint8Array): Promise<
   const stepBytes = requiredEntry(entries, 'data_step.ndc');
 
   const headers = [readNdcHeader(dataBytes), readNdcHeader(runInfoBytes), readNdcHeader(stepBytes)];
-  const expected = [
-    { version: 17, fileType: 1 },
-    { version: 17, fileType: 18 },
-    { version: 17, fileType: 7 },
-  ];
+  const expectedFileTypes = [1, 18, 7];
+  const versions = new Set(headers.map((header) => header.version));
+  const ndcVersion = headers[0].version;
   headers.forEach((header, index) => {
-    if (header.version !== expected[index].version || header.fileType !== expected[index].fileType) {
+    if (
+      versions.size !== 1 ||
+      (ndcVersion !== 14 && ndcVersion !== 17) ||
+      header.fileType !== expectedFileTypes[index]
+    ) {
       throw new Error(
         `neware_ndax_unapproved_ndc_profile:v${header.version}_type${header.fileType}`,
       );
     }
   });
+  const supportedNdcVersion = ndcVersion as SupportedNewareNdcVersion;
 
-  const data = parseNdc17Data(dataBytes);
-  const runInfo = parseNdc17RunInfo(runInfoBytes);
-  const steps = parseNdc17Steps(stepBytes);
-  const runByIndex = new Map(runInfo.map((record) => [record.index, record]));
-  const stepByOrdinal = new Map(steps.map((record) => [record.stepOrdinal, record]));
+  const data = parseNdcData(dataBytes);
+  const runInfo = parseNdcRunInfo(runInfoBytes);
+  const steps = parseNdcSteps(stepBytes);
   const warnings: string[] = [];
+  const expandedRunInfo = ndcVersion === 14 ? expandNdc14RunInfo(runInfo, data) : runInfo;
+  if (ndcVersion === 14 && runInfo.length !== data.length) {
+    warnings.push(`neware_runinfo_sparse_interpolated:anchors=${runInfo.length}:data=${data.length}`);
+  }
+  const runByIndex = new Map(expandedRunInfo.map((record) => [record.index, record]));
+  const stepByOrdinal = new Map(steps.map((record) => [record.stepOrdinal, record]));
 
-  if (data.length !== runInfo.length) {
+  if (ndcVersion !== 14 && data.length !== runInfo.length) {
     warnings.push(`neware_record_count_mismatch:data=${data.length}:runInfo=${runInfo.length}`);
   }
 
@@ -287,8 +376,9 @@ export async function parseNewareNdax(input: ArrayBuffer | Uint8Array): Promise<
   const versionInfo = elementAttributes(versionXml, 'ZwjVersion') ?? {};
 
   const metadata: NewareNdaxMetadata = {
-    parserProfileId: 'neware-ndax-ndc17-v1',
-    parserProfileVersion: '0.1.2-provisional',
+    parserProfileId: `neware-ndax-ndc${supportedNdcVersion}-v1`,
+    parserProfileVersion: supportedNdcVersion === 14 ? '0.1.3-provisional' : '0.1.2-provisional',
+    ndcVersion: supportedNdcVersion,
     approvalState: 'provisional',
     instrumentId:
       testInfo.DevID && testInfo.UnitID ? `${testInfo.DevID}:${testInfo.UnitID}` : testInfo.DevID ?? null,

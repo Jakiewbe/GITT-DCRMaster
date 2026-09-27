@@ -38,7 +38,19 @@ export const DCR_BATCH_STANDARD_POINT_SPECS_V1 = [
   },
 ] as const;
 
-export type DcrBatchPointKeyV1 = (typeof DCR_BATCH_STANDARD_POINT_SPECS_V1)[number]['key'];
+export const DCR_BATCH_DIFFERENTIAL_POINT_SPEC_V1 = {
+  key: 'terminal',
+  requestedMetric: 'DCR_terminal',
+  displayLabel: '两电流终止点',
+  requestedOffsetS: null,
+} as const;
+
+export type DcrBatchPointKeyV1 =
+  | (typeof DCR_BATCH_STANDARD_POINT_SPECS_V1)[number]['key']
+  | typeof DCR_BATCH_DIFFERENTIAL_POINT_SPEC_V1['key'];
+type DcrBatchPointSpecV1 =
+  | (typeof DCR_BATCH_STANDARD_POINT_SPECS_V1)[number]
+  | typeof DCR_BATCH_DIFFERENTIAL_POINT_SPEC_V1;
 export type DcrBatchPointStateV1 = 'usable' | 'review' | 'missing';
 export type DcrBatchInsightToneV1 = 'information' | 'caution';
 
@@ -225,7 +237,7 @@ function identityFor(input: DcrBatchDatasetInputV1): DcrBatchDatasetIdentityV1 {
 }
 
 function pointFor(
-  spec: (typeof DCR_BATCH_STANDARD_POINT_SPECS_V1)[number],
+  spec: DcrBatchPointSpecV1,
   sourceResults: readonly DcrMetricResultV1[],
 ): DcrBatchPointV1 {
   if (sourceResults.length === 0) {
@@ -336,7 +348,7 @@ function makeInsights(counts: DcrBatchCountsV1): DcrBatchInsightV1[] {
     insights.push({
       code: 'dcr_batch_no_events',
       tone: 'caution',
-      message: '没有可汇总的 Rest → 单一恒流 Pulse DCR 事件。',
+      message: '没有识别到“小电流放电 → 静置 → 大电流放电”的 NDAX DCR 配对事件。',
     });
   }
   return insights;
@@ -413,7 +425,10 @@ export function buildDcrBatchWorkbenchViewModelV1(
 
     const datasetEvents: DcrBatchEventV1[] = [];
     for (const [eventId, results] of byEvent) {
-      const points = DCR_BATCH_STANDARD_POINT_SPECS_V1.map((spec) =>
+      const pointSpecs = results.some((result) => result.requestedMetric === 'DCR_terminal')
+        ? [DCR_BATCH_DIFFERENTIAL_POINT_SPEC_V1]
+        : DCR_BATCH_STANDARD_POINT_SPECS_V1;
+      const points = pointSpecs.map((spec) =>
         pointFor(spec, results.filter((result) => result.requestedMetric === spec.requestedMetric)),
       );
       const event: DcrBatchEventV1 = {

@@ -12,7 +12,7 @@ import type { NewareCanonicalDataset } from './normalize';
  */
 export const NEWARE_CFX_GITT_1200S_PROGRAM_PROFILE_V1 = {
   profileId: 'NEWARE_BTS8_CFX_GITT_1200S_STOP_VOLT_V1',
-  profileVersion: '1.1.0',
+  profileVersion: '1.3.0',
   nominalPulseDurationS: 1_200,
   nominalPostRestDurationS: 14_400,
   /** Includes controller/recording overshoot such as 1200.1 s. */
@@ -54,6 +54,13 @@ export type NewareGitt1200sEventV1 = {
   program: NewareGitt1200sProgramEvidenceV1;
   actualPulseDurationS: number | null;
   pulseEndVoltageV: number | null;
+  /** Neware's pulse-level median voltage, kept separate from terminal cutoff. */
+  pulseMedianVoltageV: number | null;
+  /** True only for events after the first observed protocol cutoff event. */
+  isPostProtocolCutoff: boolean;
+  firstNearCutoffRowId: string | null;
+  firstNearCutoffVoltageV: number | null;
+  firstNearCutoffElapsedS: number | null;
   actualPostRestDurationS: number | null;
   termination: NewareGitt1200sTerminationV1;
   postRestState: NewareGitt1200sPostRestStateV1;
@@ -65,10 +72,13 @@ export type NewareGitt1200sProfileResultV1 = {
   profile: typeof NEWARE_CFX_GITT_1200S_PROGRAM_PROFILE_V1;
   programRecognized: boolean;
   events: NewareGitt1200sEventV1[];
+  /** All parsed events, including cycles after the first protocol cutoff. */
+  allEvents: NewareGitt1200sEventV1[];
   summary: {
     submittedPulseCount: number;
     retainedPulseCount: number;
     excludedAfterFirstCutoffCount: number;
+    postProtocolCutoffEventCount: number;
     firstCutoffSourcePulseId: string | null;
     timeLimitReachedCount: number;
     stopVoltageTerminatedCount: number;
@@ -219,6 +229,20 @@ function classifyTermination(
   return 'unknown_early_termination';
 }
 
+function firstNearCutoffRow(
+  rows: readonly CanonicalRowV1[],
+  evidence: NewareGitt1200sProgramEvidenceV1,
+): CanonicalRowV1 | null {
+  if (!evidence.programRecognized || !finite(evidence.stopVoltageV)) return null;
+  const stopVoltageV = evidence.stopVoltageV;
+  return rows.find(
+    (row) =>
+      Number.isFinite(row.voltageV) &&
+      row.voltageV <= stopVoltageV +
+        NEWARE_CFX_GITT_1200S_PROGRAM_PROFILE_V1.voltageCutoffToleranceV,
+  ) ?? null;
+}
+
 function classifyPostRest(
   actualDurationS: number | null,
   evidence: NewareGitt1200sProgramEvidenceV1,
@@ -238,8 +262,10 @@ function classifyPostRest(
 
 /**
  * Classifies Neware executed GITT events against the program saved in the
- * same NDAX file.  It never treats an early event as a voltage-cutoff event
- * unless the file itself declares a matching Stop_Volt condition.
+ * same NDAX file. It stops the valid event sequence at the first recorded
+ * pulse point near the declared Stop_Volt. This covers channels that continue
+ * looping after reaching the cutoff even though the configured program should
+ * have stopped the loop.
  */
 export function buildNewareCfxGitt1200sProfile(
   dataset: NewareCanonicalDataset,
@@ -262,6 +288,7 @@ export function buildNewareCfxGitt1200sProfile(
     const pulseProgramStep = findProgramStep(pulseGroup, dataset.metadata.programSteps);
     const restProgramStep = findProgramStep(postRestGroup, dataset.metadata.programSteps);
     const program = programEvidence(pulseProgramStep, restProgramStep, dataset.metadata.programSteps);
+    const firstNearCutoff = firstNearCutoffRow(pulseGroup.rows, program);
     const actualPulseDurationS = finite(result.pulseDurationS)
       ? result.pulseDurationS
       : secondsAtStepEnd(pulseGroup.rows);
@@ -271,7 +298,9 @@ export function buildNewareCfxGitt1200sProfile(
     const actualPostRestDurationS = postRestGroup?.rows[0]?.canonicalStepType === 'rest'
       ? secondsAtStepEnd(postRestGroup.rows)
       : null;
-    const termination = classifyTermination(actualPulseDurationS, pulseEndVoltageV, program);
+    const termination = firstNearCutoff
+      ? 'stop_voltage_terminated'
+      : classifyTermination(actualPulseDurationS, pulseEndVoltageV, program);
     const postRestState = classifyPostRest(
       actualPostRestDurationS,
       program,
@@ -293,6 +322,15 @@ export function buildNewareCfxGitt1200sProfile(
       program,
       actualPulseDurationS,
       pulseEndVoltageV,
+      pulseMedianVoltageV: finite(result.medianVoltageV) ? result.medianVoltageV : null,
+      isPostProtocolCutoff: false,
+      firstNearCutoffRowId: firstNearCutoff?.rowId ?? null,
+      firstNearCutoffVoltageV: firstNearCutoff?.voltageV ?? null,
+      firstNearCutoffElapsedS:
+        firstNearCutoff === null || firstNearCutoff.stepElapsedTimeTicks === null
+          ? null
+          : Number(firstNearCutoff.stepElapsedTimeTicks * firstNearCutoff.timeResolutionNs) /
+            1_000_000_000,
       actualPostRestDurationS,
       termination,
       postRestState,
@@ -308,15 +346,21 @@ export function buildNewareCfxGitt1200sProfile(
   const retainedEvents = firstCutoffIndex >= 0
     ? events.slice(0, firstCutoffIndex + 1)
     : events;
+  const allEvents = events.map((event, index) => ({
+    ...event,
+    isPostProtocolCutoff: firstCutoffIndex >= 0 && index > firstCutoffIndex,
+  }));
   const primaryEvidence = retainedEvents[0]?.program ?? null;
   return {
     profile: NEWARE_CFX_GITT_1200S_PROGRAM_PROFILE_V1,
     programRecognized: primaryEvidence?.programRecognized ?? false,
     events: retainedEvents,
+    allEvents,
     summary: {
       submittedPulseCount: events.length,
       retainedPulseCount: retainedEvents.length,
       excludedAfterFirstCutoffCount: events.length - retainedEvents.length,
+      postProtocolCutoffEventCount: allEvents.filter((event) => event.isPostProtocolCutoff).length,
       firstCutoffSourcePulseId:
         firstCutoffIndex >= 0 ? events[firstCutoffIndex].sourcePulseId : null,
       timeLimitReachedCount: retainedEvents.filter((event) => event.termination === 'time_limit_reached').length,

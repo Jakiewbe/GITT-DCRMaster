@@ -302,6 +302,7 @@ function buildGittInput(): GittPulseInputV1 {
     material,
     config: {
       qcPolicyId: GITT_QC_POLICY_V1.id,
+      currentResolutionA: 1e-9,
       voltageResolutionV: fixture.voltageNoiseFloorV,
       fitWindowOverride: null,
       qrefAh: fixture.qrefAh,
@@ -375,7 +376,12 @@ describe('independent Python Oracle pack', () => {
       encoding: 'utf8',
       env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
     });
-    if (result.error && (result.error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if (result.error && (result.error as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (process.env.GITTDCR_REQUIRE_PYTHON_ORACLE === '1') {
+        throw new Error('python_oracle_interpreter_missing');
+      }
+      return;
+    }
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout) as OracleExpected).toEqual(pack.expected);
   });

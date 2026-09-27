@@ -1,7 +1,26 @@
 import type { QcStatus } from '../contracts';
 
 export const GITT_QC_POLICY_V1 = {
-  id: 'GITT_QC_POLICY_CFX_1_0_0',
+  id: 'GITT_QC_POLICY_CFX_1_1_0',
+  cfx10s: {
+    presetId: 'CFx_10s',
+    requestedStartS: 0,
+    requestedEndS: 64,
+    startBoundary: 'exclusive',
+    partialPointMinimum: 5,
+    fullPointMinimum: 6,
+    rSquaredStrongMinimum: 0.995,
+    rSquaredAcceptableMinimum: 0.98,
+    windowStabilityValidMaximumDecades: 0.05,
+    windowStabilityReviewMaximumDecades: 0.15,
+    methodDivergenceReviewMaximumDecades: 0.5,
+  },
+  thresholdSources: {
+    fitPointCount: 'sampling_coverage_diagnostic',
+    rSquared: 'regression_diagnostic',
+    modelApplicability: 'WH_model_assumption_diagnostic',
+    restStability: 'measurement_diagnostic',
+  },
   fitPointCount: { validMinimum: 8, reviewMinimum: 5 },
   rSquared: { validMinimum: 0.995, reviewMinimum: 0.98 },
   dimensionlessPulseTime: { validMaximum: 0.1, reviewMaximum: 0.2 },
@@ -41,8 +60,6 @@ export const GITT_QC_POLICY_V1 = {
     reviewRangeSigmaMultiplier: 20,
   },
   duplicateTickVoltageNoiseMultiplier: 3,
-  automaticWindowFraction: 0.35,
-  automaticStartCandidateCount: 3,
   minimumFitPointCount: 5,
 } as const;
 

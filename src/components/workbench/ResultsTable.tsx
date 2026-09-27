@@ -73,6 +73,8 @@ function GittTable({ results }: { results: GittResultV1[] }) {
             <th scope="col">τ / s</th>
             <th scope="col">辅助拟合 R²</th>
             <th scope="col">适用性</th>
+            <th scope="col">Endpoint QC</th>
+            <th scope="col">主比较</th>
             <th scope="col">SOC / %</th>
             <th scope="col">DOD / %</th>
             <th scope="col">诊断提示</th>
@@ -89,6 +91,8 @@ function GittTable({ results }: { results: GittResultV1[] }) {
                 <td>{significant(result.pulseDurationS)}</td>
                 <td>{significant(result.fitDiagnostics.rSquared)}</td>
                 <td><StatusBadge kind="applicability" value={result.modelApplicability} /></td>
+                <td><StatusBadge kind="qc" value={result.primaryEndpointQcStatus} /></td>
+                <td><StatusBadge kind="qc" value={result.primaryComparisonEligibility} /></td>
                 <td>{significant(result.socPrePulsePct)}</td>
                 <td>{significant(result.dodPrePulsePct)}</td>
                 <td className="codes-cell" title={qcCodes(result.qcCodes)}>{qcCodes(result.qcCodes)}</td>

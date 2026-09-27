@@ -2,13 +2,17 @@ import type {
   AnalysisVersionsV1,
   DcrMetricResultV1,
   GittResultV1,
+  GittRegressionWindowSpecV1,
   MaterialPresetV1,
   MeasurementResolutionSetV1,
   QcStatus,
   SocBasisV1,
 } from '../science/contracts';
 import { analyzeDcrEventV1 } from '../science/dcr';
-import { analyzeGittPulse } from '../science/gitt';
+import {
+  analyzeGittPulse,
+  DEFAULT_GITT_REGRESSION_WINDOWS,
+} from '../science/gitt';
 import {
   hashAnalysisConfig,
   hashAnalysisInput,
@@ -17,6 +21,7 @@ import {
 import {
   DCR_ALGORITHM,
   GITT_ALGORITHM,
+  GITT_AUXILIARY_FIT,
   createVersionSet,
 } from '../science/versions';
 import { computeSocTrajectory, type SocTrajectoryResultV1 } from '../science/soc';
@@ -33,7 +38,7 @@ import {
   type NewareGitt1200sProfileResultV1,
 } from '../adapters/neware/gitt1200sProfile';
 import {
-  deriveNewareMeasurementResolution,
+  deriveAdapterMeasurementResolution,
   type NewareCanonicalDataset,
 } from '../adapters/neware/normalize';
 import {
@@ -67,6 +72,11 @@ export type WorkbenchSettings = {
   recipeGeometryInputMode?: 'diameter' | 'area' | null;
   recipeElectrodeAreaCm2?: number | null;
   socRequested?: boolean;
+  /** Optional seconds-based manual regression validation window. */
+  regressionManualWindow?: {
+    startS: number | null;
+    endS: number | null;
+  };
 };
 
 /** Build provenance retained in manifests but excluded from scientific hashes. */
@@ -76,6 +86,29 @@ const DEFAULT_APP_BUILD_METADATA: AppBuildMetadata = {
   appVersion: APP_VERSION,
   buildCommit: BUILD_COMMIT,
 };
+
+export function buildGittRegressionWindowSpecs(
+  settings: Pick<WorkbenchSettings, 'regressionManualWindow'>,
+): GittRegressionWindowSpecV1[] {
+  const presets: GittRegressionWindowSpecV1[] = [...DEFAULT_GITT_REGRESSION_WINDOWS];
+  const manual = settings.regressionManualWindow;
+  if (
+    manual &&
+    manual.startS !== null &&
+    manual.endS !== null &&
+    Number.isFinite(manual.startS) &&
+    Number.isFinite(manual.endS)
+  ) {
+    presets.push({
+      kind: 'fixed_time',
+      id: 'manual',
+      label: 'Manual window',
+      startS: manual.startS,
+      endS: manual.endS,
+    });
+  }
+  return presets;
+}
 
 export type AnalysisCounts = {
   total: number;
@@ -93,7 +126,7 @@ export type AnalysisCounts = {
 export type ResolvedActiveMassProvenanceV1 = {
   activeMassG: number | null;
   sourceId: string | null;
-  resolution: 'recipe_override' | 'neware_metadata' | 'unavailable';
+  resolution: 'recipe_override' | 'neware_metadata' | 'land_cex_metadata' | 'unavailable';
 };
 
 /**
@@ -147,6 +180,20 @@ function createWorkbenchConfigSnapshot(
     return {
       ...base,
       gitt: {
+        auxiliaryFitMethod: `${GITT_AUXILIARY_FIT.id}@${GITT_AUXILIARY_FIT.version}`,
+        regressionValidationWindows: buildGittRegressionWindowSpecs(settings).map((window) => window.id),
+        analysisPreset: settings.material.materialFamily === 'cfx_conversion' ? 'CFx_10s' : 'generic_gitt',
+        samplingAssumption: settings.material.materialFamily === 'cfx_conversion'
+          ? 'approximately 10 s pulse recording'
+          : null,
+        regressionRequestedWindow: settings.material.materialFamily === 'cfx_conversion'
+          ? '0 < t <= 64 s'
+          : null,
+        primaryMetric: 'endpoint_WH',
+        secondaryMetric: settings.material.materialFamily === 'cfx_conversion'
+          ? 'slope_WH_CFx_10s'
+          : null,
+        regressionManualWindow: settings.regressionManualWindow ?? null,
         electrodeDiameterCm: settings.electrodeDiameterCm,
         electrodeDiameterStandardUncertaintyCm:
           settings.electrodeDiameterStandardUncertaintyCm,
@@ -159,6 +206,7 @@ function createWorkbenchConfigSnapshot(
             resolution: activeMassProvenance.resolution,
           },
         voltageResolution: measurementResolution.voltageV,
+        currentResolution: measurementResolution.currentA,
         material: settings.material,
         initialSocPct: settings.initialSocPct,
         initialSocSource: settings.initialSocSource,
@@ -201,10 +249,11 @@ function resolveGittActiveMass(
   }
 
   if (dataset.metadata.activeMassMg !== null) {
+    const isLandCex = dataset.metadata.parserProfileId === 'land-cex-binary-v1';
     return {
       activeMassG: dataset.metadata.activeMassMg / 1000,
-      sourceId: 'neware_metadata',
-      resolution: 'neware_metadata',
+      sourceId: isLandCex ? 'land_cex_metadata' : 'neware_metadata',
+      resolution: isLandCex ? 'land_cex_metadata' : 'neware_metadata',
     };
   }
 
@@ -234,7 +283,7 @@ export function resolveNewareMeasurementResolution(
   dataset: NewareCanonicalDataset,
   settings: Pick<WorkbenchSettings, 'currentResolutionA' | 'voltageResolutionV'>,
 ): MeasurementResolutionSetV1 {
-  const automatic = deriveNewareMeasurementResolution(dataset.metadata);
+  const automatic = deriveAdapterMeasurementResolution(dataset.metadata);
   return {
     currentA: chooseResolutionEvidence(settings.currentResolutionA, automatic.currentA, 'Current'),
     voltageV: chooseResolutionEvidence(settings.voltageResolutionV, automatic.voltageV, 'Voltage'),
@@ -248,9 +297,12 @@ function countResults(
     (counts, result) => {
       counts.total += 1;
       if (result.calculationState === 'not_computable') counts.notComputable += 1;
-      if (result.qcStatus === 'valid') counts.valid += 1;
-      if (result.qcStatus === 'review') counts.review += 1;
-      if (result.qcStatus === 'rejected') counts.rejected += 1;
+      const visibleStatus = 'primaryEndpointQcStatus' in result
+        ? result.primaryEndpointQcStatus
+        : result.qcStatus;
+      if (visibleStatus === 'valid') counts.valid += 1;
+      if (visibleStatus === 'review') counts.review += 1;
+      if (visibleStatus === 'rejected') counts.rejected += 1;
       return counts;
     },
     { total: 0, valid: 0, review: 0, rejected: 0, notComputable: 0 },
@@ -379,24 +431,31 @@ export function analyzeNewareDataset(
         socPrePulse: prePulseRowId === null ? null : socByRowId.get(prePulseRowId) ?? null,
         config: {
           ...pulse.config,
+          currentResolutionA: measurementResolution.currentA.value,
+          currentResolutionEvidence: measurementResolution.currentA,
           voltageResolutionV: measurementResolution.voltageV.value,
           voltageResolutionEvidence: measurementResolution.voltageV,
           activeMassStandardUncertaintyG:
             settings.activeMassStandardUncertaintyG,
           electrodeDiameterStandardUncertaintyCm:
             settings.electrodeDiameterStandardUncertaintyCm,
+          regressionWindows: buildGittRegressionWindowSpecs(settings),
         },
       });
     });
 
     if (settings.material.materialFamily === 'cfx_conversion') {
       const programExecution = buildNewareCfxGitt1200sProfile(dataset, gittResults);
+      // Stop_Volt remains an event/audit boundary. It no longer truncates the
+      // post-processing input; comparison eligibility is decided later from
+      // the pulse's median voltage target and its own completeness evidence.
+      const eventsForAnalysis = programExecution.allEvents;
       const retainedPulseIds = new Set(
-        programExecution.events.map((event) => event.sourcePulseId),
+        eventsForAnalysis.map((event) => event.sourcePulseId),
       );
       gittResults = gittResults.filter((result) => retainedPulseIds.has(result.pulseId));
       const programEventByPulseId = new Map(
-        programExecution.events.map((event) => [event.sourcePulseId, event]),
+        eventsForAnalysis.map((event) => [event.sourcePulseId, event]),
       );
       cfxLiterature1200s = {
         programExecution,

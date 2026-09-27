@@ -169,10 +169,10 @@ def compute_gitt_oracle(section: dict[str, Any]) -> dict[str, Any]:
     length_cm = section["activeMaterialEquivalentThicknessCm"]
     pulse_duration_s = section["pulseDurationS"]
     delta_es_v = section["deltaEsV"]
-    pulse_start = min(
-        (row for row in section["pulsePoints"] if row["timeS"] > 0),
-        key=lambda row: row["timeS"],
-    )["voltageV"]
+    pulse_start = next(
+        row["voltageV"] for row in section["pulsePoints"]
+        if row["timeS"] == 0
+    )
     pulse_end = next(
         row["voltageV"] for row in section["pulsePoints"]
         if row["timeS"] == pulse_duration_s
