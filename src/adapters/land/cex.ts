@@ -11,14 +11,18 @@ import type { NewareNdaxMetadata, NewareProgramStep } from '../neware/ndax';
 import type { NewareCanonicalDataset } from '../neware/normalize';
 
 export const LAND_CEX_PARSER_PROFILE_ID = 'land-cex-binary-v1' as const;
-export const LAND_CEX_PARSER_VERSION = '0.3.0-provisional' as const;
+export const LAND_CEX_PARSER_VERSION = '0.4.0-provisional' as const;
 
 const LAND_CEX_HEADER = [0x10, 0x11, 0x09, 0x88] as const;
 const LAND_CEX_MARKER = [0xcc, 0xcc, 0xff, 0xff] as const;
 const LAND_CEX_RECORD_BYTES = 16;
 const LAND_CEX_VOLTAGE_COUNTS_PER_VOLT = 5376;
-/** Validated against LAND's official Rec.Current oracle for real GITT and DCR CEX files. */
+/** Counts per amp for LAND CEX current-range marker code 5 (1 mA range). */
 export const LAND_CEX_CURRENT_COUNTS_PER_AMP = 32_256_000;
+/** Counts per amp for LAND CEX current-range marker code 4 (10 mA range). */
+export const LAND_CEX_10MA_RANGE_COUNTS_PER_AMP = 3_225_600;
+const LAND_CEX_CURRENT_RANGE_CODE_10MA = 4;
+const LAND_CEX_CURRENT_RANGE_CODE_1MA = 5;
 const LAND_CEX_GITT_PULSE_DURATION_OFFSET = 0x23c;
 const LAND_CEX_GITT_POST_REST_DURATION_OFFSET = 0x274;
 const LAND_CEX_GITT_STOP_VOLTAGE_OFFSET = 0x294;
@@ -26,6 +30,7 @@ const LAND_CEX_GITT_STOP_VOLTAGE_OFFSET = 0x294;
 export type LandCexRawRecord = {
   index: number;
   markerOffset: number;
+  currentRangeCode: number | null;
   timeTick: number;
   voltageCode: number;
   voltageV: number;
@@ -40,15 +45,31 @@ export type LandCexParseResult = {
   warnings: string[];
 };
 
-export function landCexCurrentResolutionEvidence(): MeasurementResolutionSetV1['currentA'] {
+export function landCexCurrentResolutionEvidence(
+  currentRangeMa: number | null,
+): MeasurementResolutionSetV1['currentA'] {
+  const countsPerAmp = currentRangeMa === 10
+    ? LAND_CEX_10MA_RANGE_COUNTS_PER_AMP
+    : currentRangeMa === 1
+      ? LAND_CEX_CURRENT_COUNTS_PER_AMP
+      : null;
+  if (countsPerAmp === null) {
+    return {
+      value: null,
+      basisValue: null,
+      source: 'unavailable',
+      provisional: true,
+      message: 'LAND CEX current range could not be identified from supported record range codes.',
+    };
+  }
   return {
-    value: 1 / LAND_CEX_CURRENT_COUNTS_PER_AMP,
-    basisValue: LAND_CEX_CURRENT_COUNTS_PER_AMP,
+    value: 1 / countsPerAmp,
+    basisValue: countsPerAmp,
     source: 'vendor_oracle_validated_raw_code_lsb',
     provisional: true,
     message:
-      'LAND official Rec.Current oracle validates signed raw current code (+6/+7) scale: ' +
-      `1 code = 1/${LAND_CEX_CURRENT_COUNTS_PER_AMP} A. This is a code LSB, not an accuracy specification.`,
+      `LAND CEX range-specific signed current code uses ${countsPerAmp} counts/A ` +
+      `(observed ${currentRangeMa} mA range); this is a code LSB, not an accuracy specification.`,
   };
 }
 
@@ -65,8 +86,15 @@ function decodeVoltage(code: number): number {
   return code / LAND_CEX_VOLTAGE_COUNTS_PER_VOLT;
 }
 
-function decodeCurrent(rawCode: number): number {
-  return rawCode / LAND_CEX_CURRENT_COUNTS_PER_AMP;
+function decodeCurrent(rawCode: number, currentRangeCode: number | null): number {
+  if (rawCode === 0) return 0;
+  if (currentRangeCode === LAND_CEX_CURRENT_RANGE_CODE_10MA) {
+    return rawCode / LAND_CEX_10MA_RANGE_COUNTS_PER_AMP;
+  }
+  if (currentRangeCode === LAND_CEX_CURRENT_RANGE_CODE_1MA) {
+    return rawCode / LAND_CEX_CURRENT_COUNTS_PER_AMP;
+  }
+  throw new Error(`land_cex_current_range_code_unrecognized:${currentRangeCode ?? 'missing'}`);
 }
 
 function hasHeader(bytes: Uint8Array): boolean {
@@ -145,6 +173,8 @@ function parseCandidateRows(
     rows.push({
       index: rows.length,
       markerOffset,
+      currentRangeCode:
+        view.getUint8(markerOffset + 4) === 0x22 ? view.getUint8(markerOffset + 9) : null,
       timeTick,
       voltageCode,
       voltageV,
@@ -165,8 +195,21 @@ function detectProcedure(bytes: Uint8Array): string | null {
   return null;
 }
 
-function metadataForCex(view: DataView, bytes: Uint8Array): NewareNdaxMetadata {
+function metadataForCex(
+  view: DataView,
+  bytes: Uint8Array,
+  records: LandCexRawRecord[],
+): NewareNdaxMetadata {
   const remark = detectProcedure(bytes);
+  const currentRangeCodes = new Set(
+    records.filter((record) => record.rawCurrentCode !== 0).map((record) => record.currentRangeCode),
+  );
+  const currentRangeMa = Math.max(
+    0,
+    ...[...currentRangeCodes].map((code) =>
+      code === LAND_CEX_CURRENT_RANGE_CODE_10MA ? 10 : code === LAND_CEX_CURRENT_RANGE_CODE_1MA ? 1 : 0,
+    ),
+  ) || null;
   return {
     parserProfileId: LAND_CEX_PARSER_PROFILE_ID,
     parserProfileVersion: LAND_CEX_PARSER_VERSION,
@@ -180,7 +223,7 @@ function metadataForCex(view: DataView, bytes: Uint8Array): NewareNdaxMetadata {
     firmwareVersion: null,
     activeMassMg: readActiveMassMg(view),
     remark,
-    currentRangeMa: null,
+    currentRangeMa,
     voltageRangeV: null,
     sourceTimeResolutionNs: 10_000_000n,
     programSteps: remark === 'GITT' ? readObservedGittProgramSteps(view) : [],
@@ -205,15 +248,22 @@ export function parseLandCex(input: ArrayBuffer | Uint8Array): LandCexParseResul
   }
   records.sort((left, right) => left.timeTick - right.timeTick || left.markerOffset - right.markerOffset);
   if (records.length === 0) throw new Error('land_cex_contains_no_valid_records');
+  for (const record of records) {
+    if (record.rawCurrentCode !== 0 &&
+      record.currentRangeCode !== LAND_CEX_CURRENT_RANGE_CODE_10MA &&
+      record.currentRangeCode !== LAND_CEX_CURRENT_RANGE_CODE_1MA) {
+      throw new Error(`land_cex_current_range_code_unrecognized:${record.currentRangeCode ?? 'missing'}`);
+    }
+  }
   return {
     records: records.map((record, index) => ({ ...record, index })),
-    metadata: metadataForCex(view, bytes),
+    metadata: metadataForCex(view, bytes, records),
     warnings: [
       'LAND CEX binary mapping is provisional and validated only for the observed V7 profile.',
-      'Loaded current is decoded directly from the signed +6/+7 raw current code using the scale validated against LAND official Rec.Current; the profile remains provisional.',
+      'Loaded current is decoded from the signed +6/+7 raw current code using its +9 current-range code: code 4 uses the 10 mA scale and code 5 the 1 mA scale; the 10 mA mapping is checked against LANDdt Current/mA export.',
       'The capacity float field is now confirmed as cumulative Ah storage; the energy field is retained as raw evidence and is not used by the science core.',
       'Observed GITT pulse/rest durations and stop voltage are imported from validated CEX header fields as protocol evidence only; CanonicalRow trace values remain the production source.',
-      'Current code-LSB evidence is available from the LAND official Rec.Current oracle; voltage-resolution evidence remains unavailable, and the binary profile remains provisional.',
+      'Current code-LSB evidence is range-specific; voltage-resolution evidence remains unavailable, and the binary profile remains provisional.',
     ],
   };
 }
@@ -279,7 +329,7 @@ export async function normalizeLandCex(
         elapsedTimeS: ticksToSeconds(elapsedTimeTicks, timeResolutionNs),
         rowId: createRowId(source),
         voltageV: record.voltageV,
-        currentA: decodeCurrent(record.rawCurrentCode),
+        currentA: decodeCurrent(record.rawCurrentCode, record.currentRangeCode),
         temperatureC: null,
         vendorStepId: group.phase === 'rest' ? '3' : '2',
         vendorStepType: group.phase === 'rest' ? 'Rest' : group.phase === 'discharge' ? 'DChg' : 'Chg',
@@ -294,7 +344,7 @@ export async function normalizeLandCex(
   });
 
   const measurementResolution: MeasurementResolutionSetV1 = {
-    currentA: landCexCurrentResolutionEvidence(),
+    currentA: landCexCurrentResolutionEvidence(parsed.metadata.currentRangeMa),
     voltageV: unavailableMeasurementResolutionSet().voltageV,
   };
   return {
@@ -309,7 +359,7 @@ export async function normalizeLandCex(
       vendorProfileVersion: parsed.metadata.parserProfileVersion,
       unitEvidence: {
         voltage: 'LAND CEX V7 raw record field +4/+5 is an unsigned voltage count; official LAND oracle confirms voltageV = voltageCode / 5376.',
-        current: 'LAND CEX signed raw current code at +6/+7 is decoded directly with the scale validated against official LAND Rec.Current: 1 code = 1/32256000 A.',
+        current: 'LAND CEX signed raw current code at +6/+7 is decoded with the current-range code at marker +9: code 4 uses 1/3225600 A per code and code 5 uses 1/32256000 A per code; the code-4 mapping is cross-checked against LANDdt Current/mA export.',
         capacity: 'LAND CEX V7 float32 field +8 is cumulative capacity in Ah storage units; no additional scale is applied.',
         energy: 'Observed LAND CEX float32 field +12 is retained as raw energy evidence; it is not used by the science core.',
       },

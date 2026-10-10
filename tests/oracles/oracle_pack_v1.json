@@ -8,20 +8,20 @@
       },
       "sourceRows": [
         {
-          "sourceFileHash": "898b61e30127de6a48f8ffbb3e7bfcbdaa69ad75454f32be7790c1dc37d056cc",
+          "sourceFileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "channelId": "6",
           "sourceStream": "ndax:data.ndc:main",
           "sourceSheet": null,
-          "sourceRowIndex": "2163",
-          "sourceRecordSequence": "2163"
+          "sourceRowIndex": "1",
+          "sourceRecordSequence": "1"
         },
         {
-          "sourceFileHash": "898b61e30127de6a48f8ffbb3e7bfcbdaa69ad75454f32be7790c1dc37d056cc",
+          "sourceFileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "channelId": "6",
           "sourceStream": "ndax:data.ndc:main",
           "sourceSheet": null,
-          "sourceRowIndex": "2164",
-          "sourceRecordSequence": "2164"
+          "sourceRowIndex": "2",
+          "sourceRecordSequence": "2"
         }
       ],
       "canonicalRows": [
@@ -92,39 +92,39 @@
         { "timeS": 100, "voltageV": 3.117837916709551 }
       ]
     },
-    "dcr": {
-      "transitionTimeNs": "10800000000000",
+  "dcr": {
+      "transitionTimeNs": "300000000000",
       "baseline": {
-        "voltageV": 2.903114080429077,
+      "voltageV": 3,
         "currentA": 0
       },
       "restOffsetsNs": [
-        "-60000000000",
-        "-45000000000",
-        "-30000000000",
-        "-15000000000",
+      "-30000000000",
+      "-15000000000",
+      "-5000000000",
+      "-1000000000",
         "0"
       ],
       "pulsePoints": [
         {
           "offsetNs": "0",
-          "voltageV": 2.8476722240448,
-          "currentA": -0.0009826194727793336
+      "voltageV": 2.95,
+      "currentA": -0.001
         },
         {
           "offsetNs": "5000000000",
-          "voltageV": 2.4108529090881348,
-          "currentA": -0.0009827199392020702
+      "voltageV": 2.9,
+      "currentA": -0.002
         },
         {
           "offsetNs": "10000000000",
-          "voltageV": 2.2815158367156982,
-          "currentA": -0.0009827192407101393
+      "voltageV": 2.85,
+      "currentA": -0.002
         },
         {
           "offsetNs": "30000000000",
-          "voltageV": 2.2710061073303223,
-          "currentA": -0.0009827206376940012
+      "voltageV": 2.8,
+      "currentA": -0.002
         }
       ],
       "requests": [
@@ -195,10 +195,10 @@
       "canonical": "{\"a\":[3,null,\"\u00e9\"],\"b\":0,\"big\":\"9007199254740993\",\"nested\":{\"\u4f2a\":true}}",
       "sha256": "f20f730482aa27a43a2520a2ac7dea4a1295be17ff40fb0ec8fc45d215e782a6",
       "rowIds": [
-        "6fccc2fa9a22d67bacd0b7d0c59c9c4b33dd04fd04286e014d9e1e0e16f4c43d",
-        "84c8522f2f02b28c4605673fe71fef05820bcfb199e8f80782e667491253a65e"
+        "06e03939d21bc54ffc5dc39c726ce08e1bea7d528aabb0d89298b207653deec3",
+        "e547a9e204936e5cef20c0145fb1afd772cba6291a68cc4cbc249253c8fa9b8b"
       ],
-      "canonicalDatasetHash": "115cf84b52fc5786a494cf8976184b7f5a22c73d8d3f4da0ddd8bb7d10c84a6d"
+      "canonicalDatasetHash": "05af634ac3794baa930fea4b7c5a14db0467c35d8af0e5ea6df64c00540b0ca9"
     },
     "gitt": {
       "fitPointCount": 5,
@@ -216,9 +216,9 @@
       "DCR_first_sample": {
         "calculationState": "computed",
         "actualOffsetNs": "0",
-        "deltaVoltageV": -0.055441856384277344,
-        "deltaCurrentA": -0.0009826194727793336,
-        "resistanceOhm": 56.42250934378531
+        "deltaVoltageV": -0.04999999999999982,
+        "deltaCurrentA": -0.001,
+        "resistanceOhm": 49.99999999999982
       },
       "DCR_1s": {
         "calculationState": "not_computable",
@@ -227,23 +227,23 @@
       "DCR_5s": {
         "calculationState": "computed",
         "actualOffsetNs": "5000000000",
-        "deltaVoltageV": -0.4922611713409424,
-        "deltaCurrentA": -0.0009827199392020702,
-        "resistanceOhm": 500.9170483918735
+        "deltaVoltageV": -0.10000000000000009,
+        "deltaCurrentA": -0.002,
+        "resistanceOhm": 50.00000000000004
       },
       "DCR_10s": {
         "calculationState": "computed",
         "actualOffsetNs": "10000000000",
-        "deltaVoltageV": -0.6215982437133789,
-        "deltaCurrentA": -0.0009827192407101393,
-        "resistanceOhm": 632.5288220307922
+        "deltaVoltageV": -0.1499999999999999,
+        "deltaCurrentA": -0.002,
+        "resistanceOhm": 74.99999999999996
       },
       "DCR_30s": {
         "calculationState": "computed",
         "actualOffsetNs": "30000000000",
-        "deltaVoltageV": -0.6321079730987549,
-        "deltaCurrentA": -0.0009827206376940012,
-        "resistanceOhm": 643.2224468003695
+        "deltaVoltageV": -0.20000000000000018,
+        "deltaCurrentA": -0.002,
+        "resistanceOhm": 100.00000000000009
       }
     },
     "soc": {

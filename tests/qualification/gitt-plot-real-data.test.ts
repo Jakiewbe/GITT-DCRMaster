@@ -28,7 +28,7 @@ const settings = {
   regressionManualWindow: undefined,
 };
 
-test('real GITT pulse detail contains the complete pre-rest, pulse, and post-rest trace', async () => {
+test.skipIf(!fs.existsSync(filePath))('real GITT pulse detail contains the complete pre-rest, pulse, and post-rest trace', async () => {
   expect(fs.existsSync(filePath)).toBe(true);
   const fileName = path.basename(filePath);
   const dataset = await normalizeNewareNdax(fs.readFileSync(filePath), fileName);
@@ -45,7 +45,7 @@ test('real GITT pulse detail contains the complete pre-rest, pulse, and post-res
   expect(model?.timeline.at(-1)?.timeMinutes ?? 0).toBeGreaterThan(400);
 });
 
-test('real low-rate CFx data keeps post-Stop_Volt events available for median-target selection', async () => {
+test.skipIf(!fs.existsSync(filePath))('real low-rate CFx data keeps post-Stop_Volt events available for median-target selection', async () => {
   expect(fs.existsSync(filePath)).toBe(true);
   const fileName = path.basename(filePath);
   const dataset = await normalizeNewareNdax(fs.readFileSync(filePath), fileName);

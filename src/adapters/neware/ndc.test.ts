@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseNdc11Data,
+  parseNdc11RunInfo,
+  parseNdc11Steps,
   parseNdc14Data,
   parseNdc14RunInfo,
   parseNdc14Steps,
@@ -15,6 +18,55 @@ function makeNdc(version: number, fileType: number): Uint8Array {
   bytes[2] = version;
   return bytes;
 }
+
+describe('Neware NDC v11 primitives', () => {
+  it('decodes scaled voltage and milliamp current records', () => {
+    const bytes = makeNdc(11, 1);
+    const view = new DataView(bytes.buffer);
+    view.setFloat32(4096 + 132, 30_000, true);
+    view.setFloat32(4096 + 136, -500, true);
+    expect(parseNdc11Data(bytes)).toEqual([
+      { index: 1, voltageV: 3, currentMa: -500 },
+    ]);
+  });
+
+  it('decodes sparse run-info records and converts capacity to Ah', () => {
+    const bytes = makeNdc(11, 18);
+    const offset = 4096 + 132;
+    const view = new DataView(bytes.buffer);
+    view.setInt32(offset, 5000, true);
+    view.setFloat32(offset + 5, 360_000, true);
+    view.setFloat32(offset + 9, 720_000, true);
+    view.setInt32(offset + 33, 1_700_000_000, true);
+    view.setInt32(offset + 37, 8, true);
+    view.setInt32(offset + 41, 1, true);
+    view.setInt16(offset + 45, 123, true);
+    expect(parseNdc11RunInfo(bytes)).toEqual([
+      {
+        index: 1,
+        rawStep: 8,
+        stepOrdinal: 1,
+        stepTimeMs: 5000,
+        dtMs: expect.any(Number),
+        timestampMs: 1_700_000_000_123n,
+        chargeCapacityAh: expect.closeTo(0.1, 8),
+        dischargeCapacityAh: expect.closeTo(0.2, 8),
+      },
+    ]);
+  });
+
+  it('decodes old-layout step status records', () => {
+    const bytes = makeNdc(11, 7);
+    const offset = 4096 + 132;
+    const view = new DataView(bytes.buffer);
+    view.setInt32(offset, 0, true);
+    view.setInt32(offset + 4, 4, true);
+    view.setUint8(offset + 24, 2);
+    expect(parseNdc11Steps(bytes)).toEqual([
+      { stepOrdinal: 1, cycle: 1, stepIndex: 4, statusCode: 2, status: 'CC_DChg' },
+    ]);
+  });
+});
 
 describe('Neware NDC v17 primitives', () => {
   it('reads the version and file type without guessing', () => {

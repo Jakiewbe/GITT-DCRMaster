@@ -42,7 +42,7 @@ export function recordStorageFloat32ResolutionEvidence(
     source: 'record_storage_float32_full_scale_bound',
     provisional: true,
     message:
-      `${quantityLabel} bound derived from the NDC17 float32 storage spacing at the declared full-scale range. ` +
+      `${quantityLabel} bound derived from Neware NDC float32 storage spacing at the declared full-scale range. ` +
       'It is not a manufacturer measurement-resolution or accuracy specification.',
   };
 }

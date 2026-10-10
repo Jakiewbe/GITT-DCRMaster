@@ -50,7 +50,7 @@ function numberText(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? value.toExponential(6) : 'n/a';
 }
 
-test('qualifies high-rate median-voltage display retention on the two supplied NDAX files', async () => {
+test.skipIf(!sourceFiles.every((filePath) => fs.existsSync(filePath)))('qualifies high-rate median-voltage display retention on the two supplied NDAX files', async () => {
   const reports: Array<{
     fileName: string;
     sourceFileHash: string;

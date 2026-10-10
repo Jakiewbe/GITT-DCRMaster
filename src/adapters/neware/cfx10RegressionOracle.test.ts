@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
@@ -13,9 +13,14 @@ type Oracle = {
 };
 
 const root = process.cwd();
-const oracle = JSON.parse(
-  readFileSync(path.resolve(root, 'tests/fixtures/cfx10-real-regression-oracle-v1.json'), 'utf8'),
-) as Oracle;
+const oraclePath = path.resolve(root, 'tests/fixtures/cfx10-real-regression-oracle-v1.json');
+const oracleAvailable = existsSync(oraclePath);
+const oracle = (oracleAvailable
+  ? JSON.parse(readFileSync(oraclePath, 'utf8'))
+  : { fields: [], sources: [], signatures: [] }) as Oracle;
+const sourceFilesAvailable = oracleAvailable && oracle.sources.every((source) =>
+  existsSync(path.resolve(root, '260429 GITT', source.fileKey)),
+);
 
 const settings = {
   electrodeDiameterCm: 1.2,
@@ -38,7 +43,7 @@ function signature(row: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(values)).digest('hex');
 }
 
-describe('CFx10s real-data regression oracle', () => {
+describe.skipIf(!sourceFilesAvailable)('CFx10s real-data regression oracle', () => {
   it('keeps all frozen auxiliary fields unchanged while Endpoint fields are audited separately', async () => {
     const actualSignatures: Array<{ fileKey: string; pulseIndex: number; sha256: string }> = [];
     let totalRows = 0;

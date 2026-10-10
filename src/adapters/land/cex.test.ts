@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { normalizeLandCex, parseLandCex } from './cex';
 import {
@@ -14,6 +15,12 @@ import {
   resolveNewareMeasurementResolution,
   type WorkbenchSettings,
 } from '../../app/analyze';
+
+const realDcrCexPath = '260429 GITT/FGS-1-6-DCR-0.48mg-14_003_7.cex';
+const realGittCexPath = '260429 GITT/0.608mg-GITT-11_003_5.cex';
+const realDcrCexAvailable = existsSync(resolve(realDcrCexPath));
+const realGittCexAvailable = existsSync(resolve(realGittCexPath));
+const realCexFilesAvailable = realDcrCexAvailable && realGittCexAvailable;
 
 function cexAnalysisSettings(): WorkbenchSettings {
   return {
@@ -44,7 +51,8 @@ function syntheticCex(): Uint8Array {
   bytes.set([0x10, 0x11, 0x09, 0x88, 0x01, 0x00, 0x04, 0x00], 0);
   bytes.set(float32Bytes(0.000608), 0x1c);
   bytes.set([0xcc, 0xcc, 0xff, 0xff, 0x33], 0x100);
-  bytes.set([0xcc, 0xcc, 0xff, 0xff, 0x44], 0x140);
+  bytes.set([0xcc, 0xcc, 0xff, 0xff, 0x22], 0x140);
+  bytes[0x149] = 5;
   bytes.set([0xcc, 0xcc, 0xff, 0xff, 0x22], 0x180);
   bytes.set([0xcc, 0xcc, 0xff, 0xff, 0x33], 0x1c0 - 16);
 
@@ -66,6 +74,13 @@ function syntheticCex(): Uint8Array {
   writeRow(0x170, 3100, 0x4302, -100, 5.5555556e-6);
   writeRow(0x190, 3200, 0x4302, 0, 5.5555556e-6);
   writeRow(0x1a0, 4200, 0x4302, 0, 5.5555556e-6);
+  return bytes;
+}
+
+function syntheticCexWith10MaRange(): Uint8Array {
+  const bytes = syntheticCex();
+  bytes[0x189] = 4;
+  new DataView(bytes.buffer).setInt16(0x196, -3394, true);
   return bytes;
 }
 
@@ -111,11 +126,21 @@ describe('LAND CEX adapter', () => {
     expect(resolution.currentA.provisional).toBe(true);
   });
 
-  it('reads the two real user CEX files with monotonic records', async () => {
-    const files = [
-      '260429 GITT/FGS-1-6-DCR-0.48mg-14_003_7.cex',
-      '260429 GITT/0.608mg-GITT-11_003_5.cex',
-    ];
+  it('decodes each loaded row using its LAND current-range code', async () => {
+    const dataset = await normalizeLandCex(syntheticCexWith10MaRange(), 'dual-range.cex');
+    expect(dataset.metadata.currentRangeMa).toBe(10);
+    expect(dataset.rows[3].currentA).toBeCloseTo(-100 / 32_256_000, 15);
+    expect(dataset.rows[6].currentA).toBeCloseTo(-3394 / 3_225_600, 12);
+
+    const resolution = resolveNewareMeasurementResolution(dataset, {
+      currentResolutionA: null,
+      voltageResolutionV: null,
+    });
+    expect(resolution.currentA.value).toBeCloseTo(1 / 3_225_600, 15);
+  });
+
+  it.skipIf(!realCexFilesAvailable)('reads the two real user CEX files with monotonic records', async () => {
+    const files = [realDcrCexPath, realGittCexPath];
     for (const file of files) {
       const dataset = await normalizeLandCex(readFileSync(file), file);
       expect(dataset.rows.length).toBeGreaterThan(10);
@@ -124,9 +149,9 @@ describe('LAND CEX adapter', () => {
     }
   });
 
-  it('matches the official LAND voltage oracle for the real GITT trace', async () => {
+  it.skipIf(!realGittCexAvailable)('matches the official LAND voltage oracle for the real GITT trace', async () => {
     const dataset = await normalizeLandCex(
-      readFileSync('260429 GITT/0.608mg-GITT-11_003_5.cex'),
+      readFileSync(realGittCexPath),
       '0.608mg-GITT-11_003_5.cex',
     );
     expect(dataset.rows).toHaveLength(27142);
@@ -140,13 +165,13 @@ describe('LAND CEX adapter', () => {
     expect(Math.max(...dataset.rows.map((row) => row.voltageV))).toBeLessThan(3.5);
   });
 
-  it('classifies the real CEX files by their observed phase pattern', async () => {
+  it.skipIf(!realCexFilesAvailable)('classifies the real CEX files by their observed phase pattern', async () => {
     const dcr = await normalizeLandCex(
-      readFileSync('260429 GITT/FGS-1-6-DCR-0.48mg-14_003_7.cex'),
+      readFileSync(realDcrCexPath),
       'FGS-1-6-DCR-0.48mg-14_003_7.cex',
     );
     const gitt = await normalizeLandCex(
-      readFileSync('260429 GITT/0.608mg-GITT-11_003_5.cex'),
+      readFileSync(realGittCexPath),
       '0.608mg-GITT-11_003_5.cex',
     );
     expect(dcr.metadata.remark).toBe('DCR');
@@ -161,22 +186,22 @@ describe('LAND CEX adapter', () => {
     expect(dcr.rows.find((row) => row.currentA < 0)?.currentA).toBeCloseTo(-2680 / 32_256_000, 15);
   });
 
-  it('feeds real CEX into the existing event builders without changing their formulas', async () => {
+  it.skipIf(!realCexFilesAvailable)('feeds real CEX into the existing event builders without changing their formulas', async () => {
     const dcr = await normalizeLandCex(
-      readFileSync('260429 GITT/FGS-1-6-DCR-0.48mg-14_003_7.cex'),
+      readFileSync(realDcrCexPath),
       'FGS-1-6-DCR-0.48mg-14_003_7.cex',
     );
     const gitt = await normalizeLandCex(
-      readFileSync('260429 GITT/0.608mg-GITT-11_003_5.cex'),
+      readFileSync(realGittCexPath),
       '0.608mg-GITT-11_003_5.cex',
     );
     expect(buildNewareDcrEvents(dcr).length).toBeGreaterThan(0);
     expect(buildNewareGittPulses(gitt, createCf1MaterialPreset(), 1.2).length).toBeGreaterThan(0);
   });
 
-  it('recognizes the observed 20 min pulse and 4 h rest semantics for real CEX GITT', async () => {
+  it.skipIf(!realGittCexAvailable)('recognizes the observed 20 min pulse and 4 h rest semantics for real CEX GITT', async () => {
     const gitt = await normalizeLandCex(
-      readFileSync('260429 GITT/0.608mg-GITT-11_003_5.cex'),
+      readFileSync(realGittCexPath),
       '0.608mg-GITT-11_003_5.cex',
     );
     const pulses = buildNewareGittPulses(gitt, createCf1MaterialPreset(), 1.2);
@@ -193,9 +218,9 @@ describe('LAND CEX adapter', () => {
     expect(profile.events.every((event) => event.postRestState === 'completed_standard_rest')).toBe(true);
   });
 
-  it('produces computable GITT endpoint results from real CEX current codes', async () => {
+  it.skipIf(!realGittCexAvailable)('produces computable GITT endpoint results from real CEX current codes', async () => {
     const gitt = await normalizeLandCex(
-      readFileSync('260429 GITT/0.608mg-GITT-11_003_5.cex'),
+      readFileSync(realGittCexPath),
       '0.608mg-GITT-11_003_5.cex',
     );
     const pulses = buildNewareGittPulses(gitt, createCf1MaterialPreset(), 1.2);
@@ -207,20 +232,20 @@ describe('LAND CEX adapter', () => {
     expect(computed[0]?.metricValueCm2PerS).not.toBeNull();
   });
 
-  it('makes real CEX results visible through the application analysis bundle', async () => {
+  it.skipIf(!realGittCexAvailable)('makes real CEX results visible through the application analysis bundle', async () => {
     const gitt = await normalizeLandCex(
-      readFileSync('260429 GITT/0.608mg-GITT-11_003_5.cex'),
+      readFileSync(realGittCexPath),
       '0.608mg-GITT-11_003_5.cex',
     );
     const analysis = analyzeNewareDataset(gitt, cexAnalysisSettings());
     expect(analysis.measurementResolution.currentA.value).toBeCloseTo(1 / 32_256_000, 15);
     expect(analysis.gittResults.some((result) => result.metricValueCm2PerS !== null)).toBe(true);
     expect(analysis.cfxLiterature1200s?.comparativeProfile.summary.numericallyComputedComparativeIndexCount).toBeGreaterThan(0);
-  });
+  }, 30_000);
 
-  it('makes real CEX DCR results computable through the application analysis bundle', async () => {
+  it.skipIf(!realDcrCexAvailable)('makes real CEX DCR results computable through the application analysis bundle', async () => {
     const dcr = await normalizeLandCex(
-      readFileSync('260429 GITT/FGS-1-6-DCR-0.48mg-14_003_7.cex'),
+      readFileSync(realDcrCexPath),
       'FGS-1-6-DCR-0.48mg-14_003_7.cex',
     );
     const analysis = analyzeNewareDataset(dcr, cexAnalysisSettings());

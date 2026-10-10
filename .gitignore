@@ -25,3 +25,32 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+
+# codex-rules runtime and secrets
+.agent/runtime/
+.agent/.lock
+.agent/.transaction.json
+__pycache__/
+*.py[cod]
+.env
+.env.*
+*.pem
+*.key
+
+# Local instrument data and generated real-data audits stay out of Git.
+*.ndax
+*.cex
+*.icex
+/CFx-DCR-*.csv
+/FGS-GITT-*.csv
+/analysis/
+/outputs/
+/PROJECT_COMPLETION_REPORT.md
+/docs/CURRENT_CALCULATION_LOGIC_2026-09-15.md
+/docs/PROJECT_AUDIT_AND_LUNA_TASKS_2026-09-15.md
+/docs/validation/CFX10_REAL_DATA_BASELINE.md
+/tests/fixtures/cfx10-real-regression-oracle-v1.json
+/tests/qualification/neware-independent-export-parity-v1.json
+/tests/qualification/neware-independent-export-parity.test.ts
+/tests/qualification/neware-batch-qualification-v1.ts
+/tests/qualification/neware-batch.qualification.test.ts

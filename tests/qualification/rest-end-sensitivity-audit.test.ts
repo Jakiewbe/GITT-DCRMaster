@@ -252,7 +252,7 @@ function buildReport(pulses: PulseAudit[], frozenMismatchCount: number, generate
   return `${lines.join('\n')}\n`;
 }
 
-test('audits Rest-end estimators on the three real CFx NDAX files', async () => {
+test.skipIf(!sourceFiles.every((filePath) => fs.existsSync(filePath)))('audits Rest-end estimators on the three real CFx NDAX files', async () => {
   fs.mkdirSync(outputDir, { recursive: true });
   const pulses: PulseAudit[] = [];
   for (const filePath of sourceFiles) {

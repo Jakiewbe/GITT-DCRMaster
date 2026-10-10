@@ -68,10 +68,9 @@ export type NewareNdaxMetadata = {
   /** Adapter identifier; retained here for the existing shared dataset contract. */
   parserProfileId: string;
   /**
-   * v0.1.2 retains program-condition/loop evidence used by the CFx 1200 s
-   * adapter.  v0.1.1 remains accepted for already-saved projects.  The source
-   * NDC generation is retained separately because v14 and v17 use different
-   * binary record layouts.
+   * Retains the parser contract version for each provisional NDC generation.
+   * The source NDC generation is retained separately because binary record
+   * layouts and unit scales differ by generation.
    */
   parserProfileVersion: string;
   ndcVersion?: SupportedNewareNdcVersion;
@@ -236,11 +235,11 @@ function interpolateRunInfo(
 }
 
 /**
- * NDC14 stores run-info anchors less frequently than voltage/current samples.
- * Reconstruct the omitted rows on the physical sample index, matching the
- * vendor-compatible interpolation boundary while keeping anchor values exact.
+ * NDC11 and NDC14 store run-info anchors less frequently than voltage/current
+ * samples. Reconstruct omitted rows on the physical sample index while
+ * keeping anchor values exact.
  */
-function expandNdc14RunInfo(
+function expandSparseRunInfo(
   anchors: NewareRunInfoRecord[],
   data: NewareDataRecord[],
 ): NewareRunInfoRecord[] {
@@ -313,7 +312,7 @@ export async function parseNewareNdax(input: ArrayBuffer | Uint8Array): Promise<
   headers.forEach((header, index) => {
     if (
       versions.size !== 1 ||
-      (ndcVersion !== 14 && ndcVersion !== 17) ||
+      (ndcVersion !== 11 && ndcVersion !== 14 && ndcVersion !== 17) ||
       header.fileType !== expectedFileTypes[index]
     ) {
       throw new Error(
@@ -327,14 +326,15 @@ export async function parseNewareNdax(input: ArrayBuffer | Uint8Array): Promise<
   const runInfo = parseNdcRunInfo(runInfoBytes);
   const steps = parseNdcSteps(stepBytes);
   const warnings: string[] = [];
-  const expandedRunInfo = ndcVersion === 14 ? expandNdc14RunInfo(runInfo, data) : runInfo;
-  if (ndcVersion === 14 && runInfo.length !== data.length) {
+  const hasSparseRunInfo = ndcVersion === 11 || ndcVersion === 14;
+  const expandedRunInfo = hasSparseRunInfo ? expandSparseRunInfo(runInfo, data) : runInfo;
+  if (hasSparseRunInfo && runInfo.length !== data.length) {
     warnings.push(`neware_runinfo_sparse_interpolated:anchors=${runInfo.length}:data=${data.length}`);
   }
   const runByIndex = new Map(expandedRunInfo.map((record) => [record.index, record]));
   const stepByOrdinal = new Map(steps.map((record) => [record.stepOrdinal, record]));
 
-  if (ndcVersion !== 14 && data.length !== runInfo.length) {
+  if (!hasSparseRunInfo && data.length !== runInfo.length) {
     warnings.push(`neware_record_count_mismatch:data=${data.length}:runInfo=${runInfo.length}`);
   }
 
@@ -377,7 +377,9 @@ export async function parseNewareNdax(input: ArrayBuffer | Uint8Array): Promise<
 
   const metadata: NewareNdaxMetadata = {
     parserProfileId: `neware-ndax-ndc${supportedNdcVersion}-v1`,
-    parserProfileVersion: supportedNdcVersion === 14 ? '0.1.3-provisional' : '0.1.2-provisional',
+    parserProfileVersion:
+      supportedNdcVersion === 11 ? '0.1.4-provisional' :
+      supportedNdcVersion === 14 ? '0.1.3-provisional' : '0.1.2-provisional',
     ndcVersion: supportedNdcVersion,
     approvalState: 'provisional',
     instrumentId:

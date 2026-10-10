@@ -194,7 +194,7 @@ async function captureCurrentSnapshot() {
   };
 }
 
-test('capture the pre-migration Endpoint baseline from the production entry point', async () => {
+test.skipIf(!sourceFiles.every((filePath) => fs.existsSync(filePath)))('capture the pre-migration Endpoint baseline from the production entry point', async () => {
   fs.mkdirSync(outputDir, { recursive: true });
   if (!fs.existsSync(baselinePath)) {
     const payload = await captureCurrentSnapshot();
@@ -534,7 +534,7 @@ function buildMigrationReport(
   return reportLines.join('\n') + '\n';
 }
 
-test('reanalyze the three NDAX files and verify the frozen-field migration contract', async () => {
+test.skipIf(!sourceFiles.every((filePath) => fs.existsSync(filePath)))('reanalyze the three NDAX files and verify the frozen-field migration contract', async () => {
   const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8')) as Snapshot;
   const after = await captureCurrentSnapshot();
   fs.writeFileSync(afterPath, JSON.stringify(after, null, 2), 'utf8');

@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="title desc">
+  <title id="title">PulseLab GITT / DCR 电化学脉冲分析</title>
+  <desc id="desc">深色背景的 PulseLab 品牌横幅，左侧介绍 GITT 和 DCR 分析，右侧以电压脉冲响应曲线呈现产品主题。</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#11181e"/>
+      <stop offset="1" stop-color="#090c0f"/>
+    </linearGradient>
+    <linearGradient id="trace" x1="700" y1="0" x2="1140" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#62c8d5"/>
+      <stop offset="1" stop-color="#43b5c5"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#9aabb4" stroke-opacity=".055" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="400" rx="22" fill="url(#background)"/>
+  <rect width="1200" height="400" rx="22" fill="url(#grid)"/>
+  <path d="M0 0H1200V400H0Z" fill="none" stroke="#30414a" stroke-width="2"/>
+
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <text x="72" y="66" fill="#75cbd5" font-size="15" font-weight="600" letter-spacing="3">PULSELAB  /  BATTERY PULSE ANALYSIS</text>
+    <text x="72" y="137" fill="#f2f6f7" font-size="58" font-weight="700">PulseLab</text>
+    <text x="74" y="184" fill="#d7e0e4" font-size="28" font-weight="600">GITT · DCR 电化学脉冲分析</text>
+    <text x="74" y="221" fill="#aebdc4" font-size="18">从原始测试文件到可复核结果与作图数据</text>
+
+    <g transform="translate(72 292)">
+      <rect width="174" height="42" rx="8" fill="#18232a" stroke="#36515b"/>
+      <text x="87" y="27" fill="#d5e2e6" font-size="15" text-anchor="middle">Neware · LAND</text>
+      <rect x="188" width="164" height="42" rx="8" fill="#18232a" stroke="#36515b"/>
+      <text x="270" y="27" fill="#d5e2e6" font-size="15" text-anchor="middle">GITT · DCR</text>
+      <rect x="366" width="188" height="42" rx="8" fill="#18232a" stroke="#36515b"/>
+      <text x="460" y="27" fill="#d5e2e6" font-size="15" text-anchor="middle">逐脉冲 · 可作图导出</text>
+    </g>
+  </g>
+
+  <g transform="translate(680 64)">
+    <rect width="454" height="272" rx="16" fill="#0c1115" stroke="#2b3b43" stroke-width="2"/>
+    <path d="M38 54H416M38 108H416M38 162H416M38 216H416M92 28V244M168 28V244M244 28V244M320 28V244M396 28V244" fill="none" stroke="#8fa0a8" stroke-opacity=".13"/>
+    <path d="M38 97C56 96 69 94 84 95C99 96 104 99 108 114C111 128 110 176 114 197C117 216 124 222 141 224C155 226 161 218 165 193C169 164 166 124 174 104C182 83 198 78 216 80C244 82 257 94 278 94C300 94 307 98 310 112C313 126 311 176 315 197C319 217 325 224 341 225C356 226 364 217 368 191C373 157 369 122 380 103C389 87 402 84 416 84" fill="none" stroke="url(#trace)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M38 242H416" stroke="#57666d" stroke-opacity=".5"/>
+    <text x="38" y="260" fill="#899aa2" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12">TIME</text>
+    <text x="416" y="260" fill="#899aa2" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="12" text-anchor="end">VOLTAGE RESPONSE</text>
+  </g>
+</svg>

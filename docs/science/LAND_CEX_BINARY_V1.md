@@ -1,12 +1,12 @@
 # LAND CEX binary profile v1
 
-当前项目对 LAND `.cex` 的直接读取只覆盖已检查的 LAND BTS V7 二进制样本，profile id 为 `land-cex-binary-v1`，版本为 `0.3.0-provisional`。这不是厂家格式认证。
+当前项目对 LAND `.cex` 的直接读取只覆盖已检查的 LAND BTS V7 二进制样本，profile id 为 `land-cex-binary-v1`，当前解析器版本为 `0.4.0-provisional`。这不是厂家格式认证。
 
 ## 已确认并写入 CanonicalRow 的字段
 
 - 记录时间：每条 16 字节记录的 `+0..+3`，小端 `uint32`，单位为 10 ms tick；Canonical 的 `timeResolutionNs` 为 `10_000_000`。
 - 电压：`+4..+5`，小端无符号电压码；官方 LAND `Rec.Voltage` 对照确认 `voltageV = voltageCode / 5376`。
-- 电流：`+6..+7`，小端有符号 16 位原始电流码；官方 LAND `Rec.Current` 对照真实 GITT 与 DCR 文件确认 `currentA = rawCurrentCode / 32256000`。0 表示 Rest，负值表示放电，正值表示充电。
+- 电流：`+6..+7`，小端有符号 16 位原始电流码；按每条记录标记中的量程码解码：code 5 为 1 mA 量程，使用 32,256,000 counts/A；code 4 为 10 mA 量程，使用 3,225,600 counts/A。10 mA 量程映射已与 LANDdt 的 Current/mA 导出交叉核对。0 表示 Rest，负值表示放电，正值表示充电。
 - 累计容量：`+8..+11`，小端 float32，已经是 Ah 存储值；不再进行额外缩放。
 - 累计能量候选：`+12..+15`，小端 float32；只作为原始证据保留，不进入 GITT/DCR 科学计算。
 - 文件头 `+0x1c` 的 float32 被用于读取活性物质质量（g），再换算为 mg。
@@ -15,7 +15,7 @@
 
 ## 当前明确的边界
 
-LAND CEX 的电流现在直接读取原始记录中的有符号电流码，不再用累计容量变化反推。`1 / 32256000 A` 是通过本机 LAND 官方 DLL 的 `Rec.Current` 对照得到的代码 LSB：GITT 文件中 raw `-1697` 对应约 `-0.0526104 mA`，DCR 文件中 raw `-2680` 对应约 `-0.0830853 mA`。该证据允许电流分辨率进入分析链，但仍标记为 provisional；代码 LSB 不是仪器准确度规格。电压分辨率证据仍不可用。
+LAND CEX 的电流直接读取原始记录中的有符号电流码，不再用累计容量变化反推；缩放比例由该记录的电流量程码决定。量程映射和代码 LSB 证据仍标记为 provisional；代码 LSB 不是仪器准确度规格。电压分辨率证据仍不可用。
 
 因此，现有 GITT/DCR 公式、Endpoint、ΔEt、ΔEs、medianVoltage 和 DCR 代码没有改写；CEX 现在可以按原始电流码通过 t=0 电流判据并计算 Endpoint/DCR，结果仍因 provisional profile 与电压分辨率缺失保留 review 诊断。
 
