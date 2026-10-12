@@ -49,14 +49,28 @@ function baseSettings(): WorkbenchSettings {
 }
 
 describe('workbench recipe bridge', () => {
-  it('starts persistable, empty, and without an opt-in SOC request', () => {
+  it('uses one CFx selection for FGS and arbitrarily named samples', () => {
+    for (const name of ['FGS-GITT-1.032mg.ndax', 'sample-B-1.032mg.ndax']) {
+      const plan = buildDatasetRecipePlan(dataset(name, name), classification('gitt'), createDefaultWorkbenchRecipe());
+      expect(plan.readyToAnalyze).toBe(true);
+      expect(plan.resolved.material?.profileId).toBe('cf1');
+      expect(plan.resolved.electrodeDiameterCm).toBe(1.2);
+    }
+  });
+  it('does not apply CFx constants to a project explicitly marked non-CFx', () => {
+    const plan = buildDatasetRecipePlan(dataset('a', 'FGS-1mg.ndax'), classification('gitt'), { ...createDefaultWorkbenchRecipe(), cfxSystem: false });
+    expect(plan.readyToAnalyze).toBe(false);
+    expect(plan.blocking[0].code).toBe('cfx_system_not_confirmed');
+  });
+  it('prefills the requested visible CFx and 12 mm defaults without enabling SOC', () => {
     const recipe = createDefaultWorkbenchRecipe();
 
     expect(recipe).toEqual({
       schema: 'gitt-dcr-workbench-recipe-v1',
-      recipeVersion: '1.1.0',
+      recipeVersion: '1.2.0',
+      cfxSystem: true,
       geometryInputMode: 'diameter',
-      electrodeDiameterMm: null,
+      electrodeDiameterMm: 12,
       electrodeAreaCm2: null,
       materialParametersByProfileId: {},
       soc: {
@@ -81,7 +95,7 @@ describe('workbench recipe bridge', () => {
     expect(plan.resolved.activeMassSourceId).toBe('neware_metadata');
     expect(plan.resolved.electrodeDiameterCm).toBeCloseTo(1.2, 15);
     expect(plan.resolved.soc).toMatchObject({ requested: false, available: false });
-    expect(plan.autoResolved.map((item) => item.id)).toContain('material_profile_inferred');
+    expect(plan.autoResolved.map((item) => item.id)).not.toContain('material_profile_inferred');
   });
 
   it('uses a hash-keyed material confirmation instead of performing its own FGS inference', () => {
@@ -203,7 +217,7 @@ describe('workbench recipe bridge', () => {
     const plan = buildDatasetRecipePlan(
       dataset('missing-geometry', 'CFx-GITT-200ma-1.032mg-2.ndax'),
       classification('gitt'),
-      createDefaultWorkbenchRecipe(),
+      { ...createDefaultWorkbenchRecipe(), electrodeDiameterMm: null },
     );
 
     expect(plan.readyToAnalyze).toBe(false);

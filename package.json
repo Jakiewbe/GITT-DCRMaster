@@ -1,7 +1,7 @@
 {
   "name": "pulselab-gitt-dcr",
   "private": true,
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,6 +13,8 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:oracle": "vitest run tests/oracles/oracle_pack.test.ts",
+    "test:qualification": "vitest run --config vitest.qualification.config.ts",
+    "test:stress": "vitest run --config vitest.stress.config.ts",
     "check": "npm run typecheck && npm run lint && npm run test:run && npm run build",
     "tauri": "tauri",
     "tauri:info": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tauri-d-drive.ps1 -Action info",

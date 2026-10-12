@@ -23,7 +23,7 @@ import type { WorkbenchSettings } from './analyze';
  * module continues to own all material inference and conflict rules.
  */
 export const WORKBENCH_RECIPE_SCHEMA_V1 = 'gitt-dcr-workbench-recipe-v1' as const;
-export const WORKBENCH_RECIPE_VERSION_V1 = '1.1.0' as const;
+export const WORKBENCH_RECIPE_VERSION_V1 = '1.2.0' as const;
 
 export type WorkbenchDatasetRecipeSelectionV1 = {
   /** Explicit confirmation wins over the helper's filename/Remark inference. */
@@ -39,6 +39,8 @@ export type WorkbenchDatasetRecipeSelectionV1 = {
 export type WorkbenchRecipeV1 = {
   schema: typeof WORKBENCH_RECIPE_SCHEMA_V1;
   recipeVersion: typeof WORKBENCH_RECIPE_VERSION_V1;
+  /** null preserves the per-file material choices of older saved projects. */
+  cfxSystem: boolean | null;
   /** One geometry value is shared by a project until the user changes it. */
   geometryInputMode: RecipeGeometryInputModeV1;
   electrodeDiameterMm: number | null;
@@ -56,7 +58,7 @@ export type WorkbenchRecipeV1 = {
 export type DatasetRecipePlanAnalysisKindV1 = 'dcr' | 'gitt' | 'unknown';
 
 export type UnsupportedDatasetRecipeBlockingV1 = {
-  code: 'analysis_kind_not_supported';
+  code: 'analysis_kind_not_supported' | 'cfx_system_not_confirmed';
   message: string;
   questionId: null;
 };
@@ -175,13 +177,14 @@ function resolvedSocSettings(
   };
 }
 
-/** Creates a fresh JSON-persistable recipe with no hidden scientific defaults. */
+/** Visible project defaults explicitly requested for the CFx workbench. */
 export function createDefaultWorkbenchRecipe(): WorkbenchRecipeV1 {
   return {
     schema: WORKBENCH_RECIPE_SCHEMA_V1,
     recipeVersion: WORKBENCH_RECIPE_VERSION_V1,
+    cfxSystem: true,
     geometryInputMode: 'diameter',
-    electrodeDiameterMm: null,
+    electrodeDiameterMm: 12,
     electrodeAreaCm2: null,
     materialParametersByProfileId: {},
     soc: createDefaultSocInput(),
@@ -200,7 +203,7 @@ export function buildDatasetRecipePlan(
   recipe: WorkbenchRecipeV1,
 ): DatasetRecipePlanV1 {
   const analysisKind = classification.analysisKind;
-  if (analysisKind === 'unknown') {
+  if (analysisKind === 'unknown' || (analysisKind === 'gitt' && recipe.cfxSystem === false)) {
     return {
       recipeVersion: WORKBENCH_RECIPE_VERSION_V1,
       sourceFileHash: dataset.sourceFileHash,
@@ -209,8 +212,10 @@ export function buildDatasetRecipePlan(
       questions: [],
       blocking: [
         {
-          code: 'analysis_kind_not_supported',
-          message: 'This file does not match an approved DCR or GITT analysis profile.',
+          code: analysisKind === 'unknown' ? 'analysis_kind_not_supported' : 'cfx_system_not_confirmed',
+          message: analysisKind === 'unknown'
+            ? 'This file does not match an approved DCR or GITT analysis profile.'
+            : '当前 GITT 工作台只计算已确认的 CFx 体系；非 CFx 不套用 CFx 物性，DCR 不受影响。',
           questionId: null,
         },
       ],
@@ -224,7 +229,9 @@ export function buildDatasetRecipePlan(
   const result = buildMinimalExperimentRecipe(
     createMinimalExperimentRecipeInputFromNeware(dataset, {
       analysisKind,
-      materialConfirmation: selection?.materialConfirmation ?? undefined,
+      materialConfirmation: recipe.cfxSystem === true
+        ? { profileId: 'cf1', confidence: 'confirmed', evidence: ['project_cfx_system_confirmation'] }
+        : selection?.materialConfirmation ?? undefined,
       selectedActiveMassSourceId: selection?.selectedActiveMassSourceId ?? undefined,
       userOverrideActiveMassMg: selection?.activeMassOverrideMg ?? undefined,
       geometry: {

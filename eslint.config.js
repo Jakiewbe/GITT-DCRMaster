@@ -6,7 +6,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'coverage', 'src-tauri/target', 'scratch']),
+  globalIgnores(['dist', 'coverage', 'src-tauri/target', 'scratch', 'output', 'outputs', '.playwright-cli', '.agent/runtime']),
   {
     files: ['**/*.{js,jsx}'],
     extends: [

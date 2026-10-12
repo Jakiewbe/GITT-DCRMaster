@@ -19,6 +19,7 @@ export type WorkbenchDatasetV1 = {
   fileSize: number;
   importedAtIso: string;
   canonical: NewareCanonicalDataset;
+  displayColor?: string;
 };
 
 export type WorkbenchProjectV1 = {
@@ -280,7 +281,7 @@ function reviveWorkbenchRecipe(value: unknown): WorkbenchRecipeV1 {
     failProjectValidation('unsupported_project_recipe_schema', PROJECT_STRUCTURE_RECOVERY);
   }
   const legacyRecipe = recipe.recipeVersion === '1.0.0';
-  if (!legacyRecipe && recipe.recipeVersion !== WORKBENCH_RECIPE_VERSION_V1) {
+  if (!legacyRecipe && recipe.recipeVersion !== '1.1.0' && recipe.recipeVersion !== WORKBENCH_RECIPE_VERSION_V1) {
     failProjectValidation('unsupported_project_recipe_version', PROJECT_STRUCTURE_RECOVERY);
   }
   const electrodeDiameterMm = requireNullablePositiveFiniteNumber(
@@ -309,6 +310,9 @@ function reviveWorkbenchRecipe(value: unknown): WorkbenchRecipeV1 {
   return {
     schema: WORKBENCH_RECIPE_SCHEMA_V1,
     recipeVersion: WORKBENCH_RECIPE_VERSION_V1,
+    cfxSystem: recipe.recipeVersion !== WORKBENCH_RECIPE_VERSION_V1
+      ? null
+      : recipe.cfxSystem === null ? null : requireBoolean(recipe.cfxSystem, 'project_recipe_cfxSystem'),
     geometryInputMode: legacyRecipe
       ? 'diameter'
       : requireStringUnion(
@@ -339,7 +343,7 @@ function reviveWorkbenchRecipe(value: unknown): WorkbenchRecipeV1 {
 function reviveOrMigrateWorkbenchRecipe(root: Record<string, unknown>): WorkbenchRecipeV1 {
   return hasOwn(root, 'recipe')
     ? reviveWorkbenchRecipe(root.recipe)
-    : createDefaultWorkbenchRecipe();
+    : { ...createDefaultWorkbenchRecipe(), cfxSystem: null, electrodeDiameterMm: null };
 }
 
 function reviveMaterialPreset(value: unknown): WorkbenchSettings['material'] {
@@ -526,6 +530,9 @@ function reviveDataset(value: unknown, index: number): WorkbenchDatasetV1 {
     fileSize: requireFiniteNumber(dataset.fileSize, `dataset_${index}_fileSize`),
     importedAtIso: requireString(dataset.importedAtIso, `dataset_${index}_importedAtIso`),
     canonical,
+    ...(dataset.displayColor === undefined ? {} : {
+      displayColor: requireString(dataset.displayColor, `dataset_${index}_displayColor`),
+    }),
   };
 }
 
@@ -534,6 +541,14 @@ export function serializeWorkbenchProject(
   datasets: WorkbenchDatasetV1[],
   committedRecipe: WorkbenchRecipeV1 = createDefaultWorkbenchRecipe(),
 ): string {
+  return JSON.stringify(createWorkbenchProject(settings, datasets, committedRecipe), serializeBigInt, 2);
+}
+
+export function createWorkbenchProject(
+  settings: WorkbenchSettings,
+  datasets: WorkbenchDatasetV1[],
+  committedRecipe: WorkbenchRecipeV1,
+): WorkbenchProjectV1 {
   // Save only a structurally complete, explicit recipe snapshot. The caller
   // supplies the committed (not in-progress UI draft) value.
   const recipe = reviveWorkbenchRecipe(committedRecipe);
@@ -546,7 +561,7 @@ export function serializeWorkbenchProject(
     recipe,
     datasets,
   };
-  return JSON.stringify(project, serializeBigInt, 2);
+  return project;
 }
 
 export function parseWorkbenchProject(serialized: string): WorkbenchProjectV1 {
@@ -559,6 +574,11 @@ export function parseWorkbenchProject(serialized: string): WorkbenchProjectV1 {
       '请选择本软件导出的未修改 JSON 项目文件；如文件损坏，请重新导出或从备份恢复。',
     );
   }
+  return validateWorkbenchProject(parsed);
+}
+
+/** Shared validation for legacy JSON and bounded-page project archives. */
+export function validateWorkbenchProject(parsed: unknown): WorkbenchProjectV1 {
   const root = requireRecord(parsed, 'project');
   if (root.schema !== WORKBENCH_PROJECT_SCHEMA) {
     failProjectValidation('unsupported_project_schema', PROJECT_STRUCTURE_RECOVERY);

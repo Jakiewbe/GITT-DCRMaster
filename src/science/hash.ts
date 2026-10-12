@@ -23,23 +23,54 @@ function rotateRight(value: number, count: number): number {
   return (value >>> count) | (value << (32 - count));
 }
 
-function sha256Bytes(input: Uint8Array): Uint8Array {
-  const bitLength = BigInt(input.byteLength) * 8n;
-  const paddedLength = Math.ceil((input.byteLength + 9) / 64) * 64;
-  const padded = new Uint8Array(paddedLength);
-  padded.set(input);
-  padded[input.byteLength] = 0x80;
+class Sha256 {
+  private readonly hash: number[] = [...SHA256_INITIAL];
+  private readonly words = new Uint32Array(64);
+  private readonly block = new Uint8Array(64);
+  private blockLength = 0;
+  private totalBytes = 0;
 
-  for (let index = 0; index < 8; index += 1) {
-    padded[paddedLength - 1 - index] = Number((bitLength >> BigInt(index * 8)) & 0xffn);
+  update(input: Uint8Array): void {
+    this.totalBytes += input.byteLength;
+    let offset = 0;
+    if (this.blockLength > 0) {
+      const take = Math.min(64 - this.blockLength, input.byteLength);
+      this.block.set(input.subarray(0, take), this.blockLength);
+      this.blockLength += take;
+      offset = take;
+      if (this.blockLength < 64) return;
+      this.compress(this.block, 0);
+      this.blockLength = 0;
+    }
+    for (; offset + 64 <= input.byteLength; offset += 64) this.compress(input, offset);
+    if (offset < input.byteLength) {
+      this.block.set(input.subarray(offset));
+      this.blockLength = input.byteLength - offset;
+    }
   }
 
-  const hash: number[] = [...SHA256_INITIAL];
-  const words = new Uint32Array(64);
-  const view = new DataView(padded.buffer);
+  digest(): Uint8Array {
+    const bitLength = BigInt(this.totalBytes) * 8n;
+    const paddingLength = (this.blockLength < 56 ? 56 : 120) - this.blockLength;
+    const trailer = new Uint8Array(paddingLength + 8);
+    trailer[0] = 0x80;
+    for (let index = 0; index < 8; index += 1) {
+      trailer[trailer.length - 1 - index] = Number((bitLength >> BigInt(index * 8)) & 0xffn);
+    }
+    this.update(trailer);
 
-  for (let offset = 0; offset < paddedLength; offset += 64) {
-    for (let index = 0; index < 16; index += 1) words[index] = view.getUint32(offset + index * 4, false);
+    const output = new Uint8Array(32);
+    const outputView = new DataView(output.buffer);
+    this.hash.forEach((value, index) => outputView.setUint32(index * 4, value, false));
+    return output;
+  }
+
+  private compress(input: Uint8Array, offset: number): void {
+    const { hash, words } = this;
+    for (let index = 0; index < 16; index += 1) {
+      const byte = offset + index * 4;
+      words[index] = ((input[byte] << 24) | (input[byte + 1] << 16) | (input[byte + 2] << 8) | input[byte + 3]) >>> 0;
+    }
     for (let index = 16; index < 64; index += 1) {
       const s0 = rotateRight(words[index - 15], 7) ^ rotateRight(words[index - 15], 18) ^ (words[index - 15] >>> 3);
       const s1 = rotateRight(words[index - 2], 17) ^ rotateRight(words[index - 2], 19) ^ (words[index - 2] >>> 10);
@@ -73,20 +104,18 @@ function sha256Bytes(input: Uint8Array): Uint8Array {
     hash[6] = (hash[6] + g) >>> 0;
     hash[7] = (hash[7] + h) >>> 0;
   }
-
-  const output = new Uint8Array(32);
-  const outputView = new DataView(output.buffer);
-  hash.forEach((value, index) => outputView.setUint32(index * 4, value, false));
-  return output;
 }
 
-function utf8(value: string): Uint8Array {
-  return new TextEncoder().encode(value);
+function toHex(digest: Uint8Array): string {
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
+
+const utf8Encoder = new TextEncoder();
 
 export function sha256Hex(input: string | Uint8Array): string {
-  const digest = sha256Bytes(typeof input === 'string' ? utf8(input) : input);
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  const hasher = new Sha256();
+  hasher.update(typeof input === 'string' ? utf8Encoder.encode(input) : input);
+  return toHex(hasher.digest());
 }
 
 function canonicalNumber(value: number): string {
@@ -98,19 +127,27 @@ function canonicalString(value: string): string {
   return JSON.stringify(value.normalize('NFC'));
 }
 
-function canonicalize(value: unknown, seen: Set<object>): string {
-  if (value === null || value === undefined) return 'null';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'number') return canonicalNumber(value);
-  if (typeof value === 'bigint') return canonicalString(value.toString());
-  if (typeof value === 'string') return canonicalString(value);
+function writeCanonical(value: unknown, seen: Set<object>, emit: (fragment: string) => void): void {
+  if (value === null || value === undefined) return emit('null');
+  if (typeof value === 'boolean') return emit(value ? 'true' : 'false');
+  if (typeof value === 'number') return emit(canonicalNumber(value));
+  if (typeof value === 'bigint') return emit(canonicalString(value.toString()));
+  if (typeof value === 'string') return emit(canonicalString(value));
   if (typeof value !== 'object') throw new TypeError(`Unsupported canonical JSON value: ${typeof value}`);
 
   if (seen.has(value)) throw new TypeError('Canonical JSON does not permit cyclic values');
   seen.add(value);
 
   try {
-    if (Array.isArray(value)) return `[${value.map((item) => canonicalize(item, seen)).join(',')}]`;
+    if (Array.isArray(value)) {
+      emit('[');
+      value.forEach((item, index) => {
+        if (index > 0) emit(',');
+        writeCanonical(item, seen, emit);
+      });
+      emit(']');
+      return;
+    }
 
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
@@ -129,9 +166,12 @@ function canonicalize(value: unknown, seen: Set<object>): string {
       }
     }
 
-    return `{${entries
-      .map(({ key, value: entryValue }) => `${canonicalString(key)}:${canonicalize(entryValue, seen)}`)
-      .join(',')}}`;
+    emit('{');
+    entries.forEach(({ key, value: entryValue }, index) => {
+      emit(index > 0 ? `,${canonicalString(key)}:` : `${canonicalString(key)}:`);
+      writeCanonical(entryValue, seen, emit);
+    });
+    emit('}');
   } finally {
     seen.delete(value);
   }
@@ -139,11 +179,30 @@ function canonicalize(value: unknown, seen: Set<object>): string {
 
 /** RFC 8785/JCS-compatible JSON with the project additions: NFC strings and bigint decimal strings. */
 export function canonicalizeScientificJson(value: unknown): string {
-  return canonicalize(value, new Set<object>());
+  const fragments: string[] = [];
+  writeCanonical(value, new Set<object>(), (fragment) => fragments.push(fragment));
+  return fragments.join('');
 }
 
+const HASH_CHUNK_CHARS = 1 << 16;
+
+/**
+ * Hashes the same bytes as `sha256Hex(canonicalizeScientificJson(value))`, but
+ * streams them so results larger than the engine's maximum string length
+ * (raw GITT rows, per-row SOC trajectories) can still be identified.
+ */
 export function hashCanonicalValue(value: unknown): string {
-  return sha256Hex(canonicalizeScientificJson(value));
+  const hasher = new Sha256();
+  let pending = '';
+  writeCanonical(value, new Set<object>(), (fragment) => {
+    pending += fragment;
+    if (pending.length >= HASH_CHUNK_CHARS) {
+      hasher.update(utf8Encoder.encode(pending));
+      pending = '';
+    }
+  });
+  if (pending.length > 0) hasher.update(utf8Encoder.encode(pending));
+  return toHex(hasher.digest());
 }
 
 export function createSourceRecordIdentity(

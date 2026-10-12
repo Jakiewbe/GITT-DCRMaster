@@ -52,14 +52,14 @@ export async function saveExportBlob(
     if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
       throw new RangeError('invalid_export_chunk_size');
     }
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const chunks = Math.max(1, Math.ceil(bytes.length / chunkSize));
+    const chunks = Math.max(1, Math.ceil(blob.size / chunkSize));
     for (let index = 0; index < chunks; index += 1) {
       const start = index * chunkSize;
-      const end = Math.min(bytes.length, start + chunkSize);
+      const end = Math.min(blob.size, start + chunkSize);
+      const bytes = new Uint8Array(await blob.slice(start, end).arrayBuffer());
       await invoke('write_export_chunk', {
         fileName,
-        bytes: Array.from(bytes.slice(start, end)),
+        bytes: Array.from(bytes),
         append: index > 0,
       });
     }

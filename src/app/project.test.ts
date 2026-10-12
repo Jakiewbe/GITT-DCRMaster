@@ -196,7 +196,7 @@ describe('workbench project', () => {
     // The old global setting is retained for compatibility only. It must never
     // become evidence that the user confirmed a 12 mm electrode.
     expect(parsed.settings.electrodeDiameterCm).toBe(1.2);
-    expect(parsed.recipe).toEqual(createDefaultWorkbenchRecipe());
+    expect(parsed.recipe).toEqual({ ...createDefaultWorkbenchRecipe(), cfxSystem: null, electrodeDiameterMm: null });
     expect(parsed.recipe.electrodeDiameterMm).toBeNull();
   });
 
@@ -212,7 +212,8 @@ describe('workbench project', () => {
     const parsed = parseWorkbenchProject(JSON.stringify(legacy));
 
     expect(parsed.recipe).toMatchObject({
-      recipeVersion: '1.1.0',
+      recipeVersion: '1.2.0',
+      cfxSystem: null,
       geometryInputMode: 'diameter',
       electrodeDiameterMm: 14,
       electrodeAreaCm2: null,

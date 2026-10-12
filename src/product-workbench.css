@@ -448,7 +448,7 @@
 
 .product-dataset-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 46px;
+  grid-template-columns: 32px minmax(0, 1fr) 46px;
   align-items: stretch;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -456,6 +456,17 @@
 }
 
 .product-dataset-row:hover { border-color: var(--product-line); background: rgba(21, 26, 32, 0.68); }
+.product-dataset-row > input { margin: auto; accent-color: var(--product-blue-strong); }
+.product-file-management { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.product-removal-dialog { max-width: min(500px, calc(100vw - 40px)); padding: 28px; border: 1px solid var(--product-line); border-radius: 12px; color: var(--product-text); background: #10191d; }
+.product-removal-dialog::backdrop { background: #0009; }
+.product-removal-dialog h2 { margin: 0 0 12px; font-size: 20px; }
+.product-removal-dialog p { margin: 0 0 24px; line-height: 1.7; }
+.product-removal-dialog .product-file-management { justify-content: flex-end; }
+.product-file-selection, .product-recipe__system { display: flex; align-items: center; gap: 10px; color: var(--product-muted); font-size: 12px; }
+.product-file-selection { padding: 8px 0; }
+.product-recipe__system span { display: grid; gap: 5px; }
+.product-recipe__system strong { color: var(--product-text); }
 .product-dataset-row.is-selected { border-color: rgba(83, 184, 201, 0.3); background: var(--product-blue-soft); }
 
 .product-dataset-row__select {
@@ -579,7 +590,7 @@
   color: var(--product-muted);
   font-size: 10px;
 }
-.batch-trend-plot__legend span { display: inline-flex; align-items: center; gap: 5px; }
+.batch-trend-plot__legend span { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; overflow-wrap: anywhere; }
 .batch-trend-plot__legend i { width: 14px; height: 2px; display: block; border-radius: 99px; }
 
 .gitt-diagnostic-workspace {

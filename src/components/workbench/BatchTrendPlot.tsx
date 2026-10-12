@@ -11,6 +11,7 @@ export type BatchTrendPoint = {
   y: number | null;
   label: string;
   seriesLabel: string;
+  seriesId?: string;
   seriesColor?: string;
   seriesOrder?: number;
   state: BatchTrendPointState;
@@ -65,9 +66,10 @@ function finite(value: number | null): value is number {
   return value !== null && Number.isFinite(value);
 }
 
-function extent(values: number[]): [number, number] {
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
+export function trendExtent(values: readonly number[]): [number, number] {
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  for (const value of values) { minimum = Math.min(minimum, value); maximum = Math.max(maximum, value); }
   if (minimum === maximum) {
     const padding = Math.max(Math.abs(minimum) * 0.05, 1);
     return [minimum - padding, maximum + padding];
@@ -90,11 +92,11 @@ export function getTrendYTickValues(
   if (yScale === 'log10') {
     const minimumLog = Math.log10(yMinimum);
     const maximumLog = Math.log10(yMaximum);
-    return fractions.map((fraction) => 10 ** (
-      reverseY
-        ? minimumLog + fraction * (maximumLog - minimumLog)
-        : maximumLog - fraction * (maximumLog - minimumLog)
-    ));
+    const ticks: number[] = [];
+    for (let exponent = Math.ceil(minimumLog - 1e-10); exponent <= Math.floor(maximumLog + 1e-10); exponent += 1) {
+      ticks.push(10 ** exponent);
+    }
+    return reverseY ? ticks : ticks.reverse();
   }
   return fractions.map((fraction) => reverseY
     ? yMinimum + fraction * (yMaximum - yMinimum)
@@ -148,18 +150,20 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
     if (numericPoints.length === 0) return null;
 
     const xValues = numericPoints.map((point) => point.x);
-    const [automaticXMinimum, xMaximum] = extent(xValues);
+    const [automaticXMinimum, xMaximum] = trendExtent(xValues);
     const xMinimum = Number.isFinite(minimumX)
-      ? Math.min(minimumX as number, Math.min(...xValues))
+      ? Math.min(minimumX as number, xValues.reduce((value, item) => Math.min(value, item), Infinity))
       : automaticXMinimum;
     const yValues = numericPoints.map((point) => point.y as number);
     const transformY = (value: number) => yScale === 'log10' ? Math.log10(value) : value;
     const restoreY = (value: number) => yScale === 'log10' ? 10 ** value : value;
     const transformedYValues = yValues.map(transformY);
-    const [automaticYMinimum, automaticYMaximum] = extent(transformedYValues);
+    const [rawYMinimum, rawYMaximum] = trendExtent(transformedYValues);
+    const automaticYMinimum = yScale === 'log10' ? Math.floor(rawYMinimum) : rawYMinimum;
+    const automaticYMaximum = yScale === 'log10' ? Math.ceil(rawYMaximum) : rawYMaximum;
     const transformedMinimumY = Number.isFinite(minimumY) &&
       (yScale === 'linear' || (minimumY as number) > 0)
-      ? Math.min(transformY(minimumY as number), Math.min(...transformedYValues))
+      ? Math.min(transformY(minimumY as number), transformedYValues.reduce((value, item) => Math.min(value, item), Infinity))
       : automaticYMinimum;
     const innerWidth = WIDTH - LEFT - RIGHT;
     const innerHeight = HEIGHT - TOP - BOTTOM;
@@ -180,9 +184,10 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
         xPosition: xPosition(point.x),
         yPosition: yPosition(point.y as number),
       };
-      const existing = series.get(point.seriesLabel);
+      const key = point.seriesId ?? point.seriesLabel;
+      const existing = series.get(key);
       if (existing) existing.push(item);
-      else series.set(point.seriesLabel, [item]);
+      else series.set(key, [item]);
     }
 
     return {
@@ -190,8 +195,9 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
       xMaximum,
       yMinimum: restoreY(transformedMinimumY),
       yMaximum: restoreY(automaticYMaximum),
-      series: [...series.entries()].map(([label, items], index) => ({
-        label,
+      series: [...series.entries()].map(([id, items], index) => ({
+        id,
+        label: items[0].seriesLabel,
         color: items[0]?.seriesColor ?? SERIES_COLORS[index % SERIES_COLORS.length],
         points: [...items].sort((left, right) =>
           (left.seriesOrder ?? left.x) - (right.seriesOrder ?? right.x) ||
@@ -229,11 +235,12 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
           </clipPath>
         </defs>
 
-        {tickFractions.map((fraction) => {
+        {getTrendYTickValues(model.yMinimum, model.yMaximum, yScale, reverseY).map((yValue) => {
+          const minimum = yScale === 'log10' ? Math.log10(model.yMinimum) : model.yMinimum;
+          const maximum = yScale === 'log10' ? Math.log10(model.yMaximum) : model.yMaximum;
+          const value = yScale === 'log10' ? Math.log10(yValue) : yValue;
+          const fraction = reverseY ? (value - minimum) / (maximum - minimum) : (maximum - value) / (maximum - minimum);
           const y = TOP + fraction * (HEIGHT - TOP - BOTTOM);
-          const yValue = getTrendYTickValues(model.yMinimum, model.yMaximum, yScale, reverseY)[
-            Math.round(fraction * 4)
-          ];
           return (
             <g key={`horizontal-${fraction}`}>
               <line
@@ -283,7 +290,7 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
         <g clipPath={`url(#${clipId})`}>
           {model.series.map((series) => shouldRenderTrendLines(showLines, series.points.length) ? (
             <path
-              key={`line-${series.label}`}
+              key={`line-${series.id}`}
               d={linePath(series.points)}
               fill="none"
               stroke={series.color}
@@ -334,7 +341,7 @@ export const BatchTrendPlot = memo(function BatchTrendPlot({
       {model.series.length > 1 && (
         <div className="batch-trend-plot__legend" aria-label="图例">
           {model.series.map((series) => (
-            <span key={series.label}>
+            <span key={series.id} title={series.label}>
               <i aria-hidden="true" style={{ background: series.color }} />
               {series.label}
             </span>

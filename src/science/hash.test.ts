@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
@@ -48,6 +49,30 @@ describe('scientific canonical JSON and SHA-256', () => {
   it('matches standard SHA-256 vectors', () => {
     expect(sha256Hex('')).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
     expect(sha256Hex('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+  });
+
+  it('matches node:crypto across SHA-256 block and padding boundaries', () => {
+    for (const length of [0, 1, 55, 56, 63, 64, 65, 119, 120, 127, 128, 1000, 70_001]) {
+      const bytes = Uint8Array.from({ length }, (_, index) => (index * 31 + 7) & 0xff);
+      expect(sha256Hex(bytes)).toBe(createHash('sha256').update(bytes).digest('hex'));
+    }
+  });
+
+  it('streams canonical hashing without changing the canonical-string hash', () => {
+    const value = {
+      schema: 'scientific-result-v1',
+      points: Array.from({ length: 5_000 }, (_, index) => ({
+        rowId: `${index}`.padStart(64, 'f'),
+        socPct: index / 7,
+        label: index % 3 === 0 ? 'α-é\u{1F50B}' : 'rest',
+        ticks: BigInt(index) * 1_000_000n,
+        temperatureC: null,
+      })),
+    };
+    const canonical = canonicalizeScientificJson(value);
+    expect(canonical.length).toBeGreaterThan(1 << 17);
+    expect(hashCanonicalValue(value)).toBe(createHash('sha256').update(canonical, 'utf8').digest('hex'));
+    expect(hashCanonicalValue(value)).toBe(sha256Hex(canonical));
   });
 
   it('normalizes strings, bigint, negative zero, key order, and undefined', () => {

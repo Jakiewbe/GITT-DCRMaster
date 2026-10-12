@@ -5,6 +5,8 @@ describe('file export runtime bridge', () => {
   it('writes a large Tauri export in bounded chunks instead of one IPC payload', async () => {
     const invoke = vi.fn().mockResolvedValue('C:/Users/test/Downloads/result.xlsx');
     const blob = new Blob([new Uint8Array([1, 2, 3, 4, 5])], { type: 'application/octet-stream' });
+    // Reading the entire Blob would recreate the large-export memory peak.
+    const wholeBlobRead = vi.spyOn(blob, 'arrayBuffer').mockRejectedValue(new Error('whole_blob_read_forbidden'));
 
     const result = await saveExportBlob('result.xlsx', blob, {
       runtime: 'tauri',
@@ -24,6 +26,7 @@ describe('file export runtime bridge', () => {
       append: true,
     });
     expect(result).toEqual({ mode: 'tauri', chunks: 3 });
+    expect(wholeBlobRead).not.toHaveBeenCalled();
   });
 
   it('keeps the browser download path when the desktop bridge is absent', async () => {

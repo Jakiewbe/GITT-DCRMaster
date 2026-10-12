@@ -47,7 +47,7 @@ type BatchAnalysisRequestV1 = ClassifiedDatasetV1 & {
   blockedReasonCodes: string[];
 };
 
-const MAXIMUM_CONCURRENT_ANALYSES = 2;
+export const MAXIMUM_CONCURRENT_ANALYSES = 1;
 
 /**
  * Turns a project-level recipe into one immutable, per-file analysis request.
@@ -109,12 +109,14 @@ export function useBatchAnalysis(
   datasets: readonly WorkbenchDatasetV1[],
   settings: WorkbenchSettings,
   recipe: WorkbenchRecipeV1,
+  paused = false,
 ): {
   entries: BatchAnalysisEntryV1[];
   cache: AnalysisCache;
   pendingCount: number;
 } {
-  const [cache] = useState(() => createAnalysisCache(48));
+  // Retain exactly the current requests below, not 48 historical full results.
+  const [cache] = useState(() => createAnalysisCache(Number.MAX_SAFE_INTEGER));
   const [revision, setRevision] = useState(0);
 
   const requests = useMemo(
@@ -123,6 +125,8 @@ export function useBatchAnalysis(
   );
 
   useEffect(() => {
+    cache.retain(new Set(requests.flatMap((request) => request.cacheKey === null ? [] : [request.cacheKey])));
+    if (paused) return undefined;
     const pending = requests.filter(
       (request) =>
         request.cacheKey !== null &&
@@ -192,13 +196,25 @@ export function useBatchAnalysis(
         setRevision((current) => current + 1);
         finish();
       };
+      worker.onmessageerror = () => {
+        if (cancelled) return;
+        cache.set(cacheKey, { analysis: null, error: 'analysis_worker_message_decode_failed' });
+        setRevision((current) => current + 1);
+        finish();
+      };
 
       const request: AnalysisWorkerRequest = {
         requestId: cacheKey,
         dataset: next.loaded.canonical,
         settings: resolvedSettings,
       };
-      worker.postMessage(request);
+      try {
+        worker.postMessage(request);
+      } catch (error) {
+        cache.set(cacheKey, { analysis: null, error: error instanceof Error ? error.message : 'analysis_worker_send_failed' });
+        setRevision((current) => current + 1);
+        finish();
+      }
     };
 
     for (let index = 0; index < Math.min(MAXIMUM_CONCURRENT_ANALYSES, pending.length); index += 1) {
@@ -209,7 +225,7 @@ export function useBatchAnalysis(
       cancelled = true;
       for (const worker of activeWorkers) worker.terminate();
     };
-  }, [cache, requests, settings]);
+  }, [cache, paused, requests, settings]);
 
   const entries = useMemo<BatchAnalysisEntryV1[]>(
     () => requests.map((request) => {

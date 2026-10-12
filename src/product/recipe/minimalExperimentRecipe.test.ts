@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildMinimalExperimentRecipe,
   createMinimalExperimentRecipeInputFromNeware,
+  extractMassMg,
   type MinimalExperimentRecipeInputV1,
 } from './minimalExperimentRecipe';
 
@@ -19,6 +20,28 @@ function cfxGittInput(
 }
 
 describe('minimal experiment recipe', () => {
+  it.each([
+    ['CFx-200ma-1.032mg.ndax', 1.032], ['FGS-0.52 mg.cex', 0.52], ['mass-0.001032g.ndax', 1.032],
+    ['mass-1032μg.ndax', 1.032], ['mass-1032ug.ndax', 1.032], ['mass-１．０３２ｍｇ.ndax', 1.032],
+    ['活性质量1.032毫克', 1.032], ['CFx-200ma-2.ndax', null], ['C1500-1.144-DCR.ndax', null],
+    ['1mg-2mg.ndax', null], ['0mg.ndax', null],
+  ])('reads explicit mass units from %s without guessing unrelated numbers', (text, expected) => {
+    if (expected === null) expect(extractMassMg(text)).toBeNull();
+    else expect(extractMassMg(text)).toBeCloseTo(expected, 12);
+  });
+  it('uses a unique explicit-unit source when instrument mass is absent, retaining provenance', () => {
+    const result = buildMinimalExperimentRecipe(cfxGittInput({ activeMass: { metadataMassMg: null,
+      corroboratingEvidence: [{ sourceId: 'filename', label: 'file', massMg: 1.05 }] } }));
+    expect(result.readyToAnalyze).toBe(true);
+    expect(result.resolved.activeMassG).toBeCloseTo(0.00105, 15);
+    expect(result.resolved.activeMassSourceId).toBe('filename');
+  });
+  it('does not let a matching Remark suppress a conflicting filename mass', () => {
+    const result = buildMinimalExperimentRecipe(cfxGittInput({ activeMass: { metadataMassMg: 1,
+      corroboratingEvidence: [{ sourceId: 'filename', label: 'file', massMg: 2 }, { sourceId: 'neware_remark', label: 'remark', massMg: 1 }] } }));
+    expect(result.readyToAnalyze).toBe(false);
+    expect(result.blocking.map((item) => item.code)).toContain('active_mass_conflict');
+  });
   it('asks nothing for DCR', () => {
     const recipe = buildMinimalExperimentRecipe({
       analysisKind: 'dcr',

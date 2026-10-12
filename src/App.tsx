@@ -29,13 +29,11 @@ import type {
   CfxRecipeMaterialProfileIdV1,
   MinimalRecipeAutoResolvedV1,
   RecipeGeometryInputModeV1,
-  RecipeMaterialSelectionV1,
 } from './product/recipe';
-import {
-  parseWorkbenchProject,
-  serializeWorkbenchProject,
-  type WorkbenchDatasetV1,
-} from './app/project';
+import { type WorkbenchDatasetV1 } from './app/project';
+import { assignDatasetColors, nextDatasetColor, removeDatasetsFromProject } from './app/datasetManagement';
+import { FileRemovalDialog } from './components/workbench/FileRemovalDialog';
+import { runProjectWorker } from './app/projectWorker';
 import type {
   NormalizeWorkerRequest,
   NormalizeWorkerResponse,
@@ -330,6 +328,8 @@ function App() {
   const [page, setPage] = useState<WorkspacePage>('data');
   const [datasets, setDatasets] = useState<WorkbenchDatasetV1[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [checkedDatasetIds, setCheckedDatasetIds] = useState<Set<string>>(() => new Set());
+  const [pendingRemovalIds, setPendingRemovalIds] = useState<ReadonlySet<string> | null>(null);
   const [settings, setSettings] = useState<WorkbenchSettings>(DEFAULT_SETTINGS);
   const [analysisSettings, setAnalysisSettings] = useState<WorkbenchSettings>(DEFAULT_SETTINGS);
   // `recipe` is a draft.  A GITT worker sees it only after the user presses
@@ -357,7 +357,9 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [analysisSettings, settings]);
 
-  const { entries, pendingCount } = useBatchAnalysis(datasets, analysisSettings, analysisRecipe);
+  const { entries, pendingCount } = useBatchAnalysis(
+    datasets, analysisSettings, analysisRecipe, busyAction === 'import' || busyAction === 'open-project',
+  );
   const settingsPending = settings !== analysisSettings;
   const isBusy = busyAction !== null;
   const analysisPending = pendingCount > 0;
@@ -450,8 +452,8 @@ function App() {
       const materialLabel = entry.resolvedSettings?.recipeMaterialProfileId === 'fgs_cf1_reference'
         ? 'FGS'
         : 'CFₓ';
-      const seriesColor = materialLabel === 'FGS' ? '#43b5c5' : '#d783c5';
-      const seriesLabel = `${materialLabel} · ${shortFileName(entry.loaded.fileName, 24)}`;
+      const seriesColor = entry.loaded.displayColor;
+      const seriesLabel = `${materialLabel} · ${entry.loaded.fileName}`;
       const retainedRows = rowsThroughCfxMedianVoltageFloor(
         entry.loaded.canonical.rows,
         program,
@@ -463,6 +465,7 @@ function App() {
         y: point.voltageV,
         label: `${seriesLabel} · ${point.timeMinutes.toFixed(1)} min`,
         seriesLabel,
+        seriesId: entry.loaded.id,
         seriesColor,
         state: 'neutral',
       }));
@@ -483,8 +486,8 @@ function App() {
       const materialLabel = entry.resolvedSettings?.recipeMaterialProfileId === 'fgs_cf1_reference'
         ? 'FGS'
         : 'CFₓ';
-      const seriesColor = materialLabel === 'FGS' ? '#43b5c5' : '#d783c5';
-      const seriesLabel = `${materialLabel} · ${shortFileName(entry.loaded.fileName, 24)}`;
+      const seriesColor = entry.loaded.displayColor;
+      const seriesLabel = `${materialLabel} · ${entry.loaded.fileName}`;
       return (entry.analysis?.gittResults ?? []).flatMap((result) => {
         const pulse = pulseById.get(result.pulseId);
         const voltageV = result.medianVoltageV;
@@ -503,6 +506,7 @@ function App() {
             y: candidate,
             label: `${seriesLabel} · Endpoint · 脉冲 ${pulse.sourceOrder}`,
             seriesLabel: `${seriesLabel} · Endpoint WH`,
+            seriesId: entry.loaded.id,
             seriesColor,
             seriesOrder: pulse.sourceOrder,
             state: 'neutral' as const,
@@ -774,6 +778,11 @@ function App() {
         </div>
 
         <div className="product-recipe__batch-mass" aria-label="批量 GITT 文件活性物质质量">
+          <label className="product-recipe__system">
+            <input type="checkbox" checked={recipe.cfxSystem === true} disabled={isBusy}
+              onChange={(event) => setRecipe((current) => ({ ...current, cfxSystem: event.target.checked }))} />
+            <span><strong>本项目为 CFx 体系</strong><small>CFx、FGS 等文件名仅用于区分样品，统一使用 CFx 参数；取消后不套用 CFx GITT 模型。旧项目需明确确认。</small></span>
+          </label>
           <div>
             <strong>批量文件的活性物质质量分别计算</strong>
             <p>每个 NDAX 文件独立使用自己的质量；该质量只进入对应文件的 qref 和 WH 归一化，不会在多个文件之间取平均。</p>
@@ -816,49 +825,14 @@ function App() {
               ))}
             </ul>
             <p>
-              CFₓ/FGS 按 WH 平面端点手算法直接输出；结果用于同条件比较，不标注为本征固相扩散系数。
+              CFₓ 体系按 WH 平面端点口径输出；结果用于同条件比较，不标注为本征固相扩散系数。
             </p>
           </div>
 
           <div className="product-recipe__questions">
             {requiredQuestions.map((question) => {
               if (question.id === 'confirm_material_profile') {
-                return (
-                  <fieldset className="product-recipe__question" key={question.id}>
-                    <legend>{question.title}</legend>
-                    <p>{question.prompt}</p>
-                    <div className="product-recipe__choices">
-                      {question.choices?.map((choice) => {
-                        const profileId: RecipeMaterialSelectionV1['profileId'] =
-                          choice.value === 'cf1' || choice.value === 'fgs_cf1_reference'
-                            ? choice.value
-                            : null;
-                        const checked = selection?.materialConfirmation?.profileId === profileId;
-                        return (
-                          <label className={`product-recipe__choice ${checked ? 'is-selected' : ''}`} key={choice.value}>
-                            <input
-                              type="radio"
-                              name={`recipe-material-${plan.sourceFileHash}`}
-                              value={choice.value}
-                              checked={checked}
-                              onChange={() => {
-                                if (profileId === null) return;
-                                updateRecipeSelection(plan.sourceFileHash, {
-                                  materialConfirmation: {
-                                    profileId,
-                                    confidence: 'confirmed',
-                                    evidence: question.choices?.map((item) => item.detail) ?? [],
-                                  },
-                                });
-                              }}
-                            />
-                            <span><strong>{choice.label}</strong><small>{choice.detail}</small></span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </fieldset>
-                );
+                return <p key={question.id}>请在上方确认是否为 CFx 体系；不再根据文件名要求选择 CFx / FGS。</p>;
               }
 
               if (question.id === 'confirm_active_mass_source') {
@@ -1139,6 +1113,7 @@ function App() {
       const imported: WorkbenchDatasetV1[] = [];
       const messages: string[] = [];
       const existingIds = new Set(datasets.map((dataset) => dataset.id));
+      const usedColors = new Set(datasets.flatMap((dataset) => dataset.displayColor ? [dataset.displayColor] : []));
       const normalizer = new Worker(new URL('./workers/normalize.worker.ts', import.meta.url), {
         type: 'module',
         name: 'gitt-dcr-file-normalizer',
@@ -1181,12 +1156,15 @@ function App() {
               continue;
             }
             existingIds.add(canonical.sourceFileHash);
+            const displayColor = nextDatasetColor(usedColors);
+            usedColors.add(displayColor);
             imported.push({
               id: canonical.sourceFileHash,
               fileName: file.name,
               fileSize: file.size,
               importedAtIso: new Date().toISOString(),
               canonical,
+              displayColor,
             });
           } catch (error) {
             messages.push(`${file.name}：${error instanceof Error ? error.message : '导入失败'}`);
@@ -1211,13 +1189,27 @@ function App() {
     }
   };
 
-  const removeDataset = (id: string) => {
-    setDatasets((current) => current.filter((dataset) => dataset.id !== id));
-    if (selectedId === id) {
-      setSelectedId(null);
+  const removeDatasets = (ids: ReadonlySet<string>) => {
+    if (isBusy || ids.size === 0) return;
+    setPendingRemovalIds(new Set(ids));
+  };
+
+  const confirmRemoveDatasets = () => {
+    if (isBusy || pendingRemovalIds === null) return;
+    const ids = pendingRemovalIds;
+    setPendingRemovalIds(null);
+    const remaining = removeDatasetsFromProject(datasets, recipe, ids);
+    setDatasets(remaining.datasets);
+    setRecipe(remaining.recipe);
+    setAnalysisRecipe((current) => removeDatasetsFromProject(datasets, current, ids).recipe);
+    setCheckedDatasetIds(new Set());
+    if (selectedId === null || ids.has(selectedId)) {
+      setSelectedId(remaining.datasets[0]?.id ?? null);
       setAuditOpen(false);
       setAuditFocus(null);
+      setSelectedGittPulseId(null);
     }
+    setNotice(`已从项目移除 ${ids.size} 个文件，原始文件保留。`);
   };
 
   const saveProject = async () => {
@@ -1226,10 +1218,9 @@ function App() {
     setOperationStatus(`正在保存 ${datasets.length} 个 Canonical 数据集…`);
     try {
       await nextPaint();
-      await downloadText(
-        `pulselab-gitt-dcr-project-${new Date().toISOString().slice(0, 10)}.json`,
-        serializeWorkbenchProject(settings, datasets, analysisRecipe),
-      );
+      const response = await runProjectWorker({ action: 'save', settings, datasets, recipe: analysisRecipe });
+      if (response.action !== 'save') throw new Error('project_worker_response_mismatch');
+      await downloadBlob(`pulselab-gitt-dcr-project-${new Date().toISOString().slice(0, 10)}.pulselab`, response.blob);
       setNotice(`项目已保存：${datasets.length} 个数据集。恢复时将重新校验 Canonical hash。`);
     } catch (error) {
       setNotice(`项目保存失败：${error instanceof Error ? error.message : 'project_save_failed'}`);
@@ -1245,12 +1236,18 @@ function App() {
     setOperationStatus(`正在校验项目：${file.name}`);
     try {
       await nextPaint();
-      const project = parseWorkbenchProject(await file.text());
+      const response = await runProjectWorker({ action: 'open', file });
+      if (response.action !== 'open') throw new Error('project_worker_response_mismatch');
+      const project = response.project;
       setSettings(project.settings);
       setAnalysisSettings(project.settings);
       setRecipe(project.recipe);
       setAnalysisRecipe(project.recipe);
-      setDatasets(project.datasets);
+      setDatasets(assignDatasetColors(project.datasets));
+      setCheckedDatasetIds(new Set());
+      setAuditOpen(false);
+      setAuditFocus(null);
+      setSelectedGittPulseId(null);
       setSelectedId(project.datasets[0]?.id ?? null);
       setPage('data');
       setNotice(`项目已恢复：${project.datasets.length} 个数据集将按当前科学内核重新分析。`);
@@ -1760,16 +1757,26 @@ function App() {
           </div>
         </section>
 
-        {renderGittRecipeSetup()}
-
         <section className="product-section">
           <div className="product-section-heading">
             <div>
               <span className="product-eyebrow">SOURCE FILES</span>
               <h3>数据文件</h3>
             </div>
-            <span>{entries.length} 个文件</span>
+            <div className="product-file-management" aria-label="文件管理">
+              <span>{entries.length} 个文件</span>
+              <button className="product-button product-button--secondary" disabled={isBusy || checkedDatasetIds.size === 0}
+                onClick={() => removeDatasets(checkedDatasetIds)}>移除所选 ({checkedDatasetIds.size})</button>
+              <button className="product-button product-button--secondary" disabled={isBusy || datasets.length === 0}
+                onClick={() => removeDatasets(new Set(datasets.map((dataset) => dataset.id)))}>清空项目</button>
+            </div>
           </div>
+          <label className="product-file-selection">
+            <input type="checkbox" aria-label="选择全部文件" disabled={isBusy}
+              checked={datasets.length > 0 && checkedDatasetIds.size === datasets.length}
+              onChange={(event) => setCheckedDatasetIds(event.target.checked ? new Set(datasets.map((dataset) => dataset.id)) : new Set())} />
+            全选 · 移除仅影响当前项目，不删除原始文件
+          </label>
           <div className="product-dataset-list">
             {entries.map((entry) => {
               const status = resultStatus(entry);
@@ -1781,8 +1788,15 @@ function App() {
                   : '未识别';
               return (
                 <article className={`product-dataset-row ${isSelected ? 'is-selected' : ''}`} key={entry.loaded.id}>
+                  <input type="checkbox" aria-label={`选择文件 ${entry.loaded.fileName}`} disabled={isBusy}
+                    checked={checkedDatasetIds.has(entry.loaded.id)}
+                    onChange={(event) => setCheckedDatasetIds((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(entry.loaded.id); else next.delete(entry.loaded.id);
+                      return next;
+                    })} />
                   <button className="product-dataset-row__select" onClick={() => selectEntry(entry, true)} disabled={isBusy}>
-                    <FileArchive aria-hidden="true" />
+                    <FileArchive aria-hidden="true" style={{ color: entry.loaded.displayColor }} />
                     <span className="product-dataset-row__copy">
                       <strong title={entry.loaded.fileName}>{entry.loaded.fileName}</strong>
                       <small>{kindLabel} · {formatBytes(entry.loaded.fileSize)} · {entry.loaded.canonical.rows.length.toLocaleString('zh-CN')} 条记录</small>
@@ -1791,7 +1805,7 @@ function App() {
                   </button>
                   <button
                     className="product-icon-button product-icon-button--danger"
-                    onClick={() => removeDataset(entry.loaded.id)}
+                    onClick={() => removeDatasets(new Set([entry.loaded.id]))}
                     aria-label={`移除 ${entry.loaded.fileName}`}
                     disabled={isBusy}
                   >
@@ -1802,6 +1816,8 @@ function App() {
             })}
           </div>
         </section>
+
+        {renderGittRecipeSetup()}
 
         <section className="product-support-note">
           <Info aria-hidden="true" />
@@ -2351,7 +2367,7 @@ function App() {
         </nav>
         <div className="product-topbar__actions">
           <input ref={fileInputRef} className="sr-only" type="file" accept=".ndax,.cex" multiple disabled={isBusy} tabIndex={-1} onChange={(event) => void importFiles(event.target.files)} />
-          <input ref={projectInputRef} className="sr-only" type="file" accept=".json,.gittdcr" disabled={isBusy} tabIndex={-1} onChange={(event) => void openProject(event.target.files)} />
+          <input ref={projectInputRef} className="sr-only" type="file" accept=".pulselab,.json,.gittdcr" disabled={isBusy} tabIndex={-1} onChange={(event) => void openProject(event.target.files)} />
           <button className="product-icon-button" onClick={() => projectInputRef.current?.click()} aria-label="打开项目" title="打开项目" disabled={isBusy}><FolderOpen aria-hidden="true" /></button>
           <button className="product-icon-button" onClick={() => void saveProject()} aria-label="保存项目" title="保存项目" disabled={datasets.length === 0 || isBusy}><Save aria-hidden="true" /></button>
           <button className="product-button product-button--primary" onClick={() => fileInputRef.current?.click()} disabled={isBusy}>
@@ -2371,6 +2387,9 @@ function App() {
         {page === 'gitt' && renderGittPage()}
         {page === 'report' && renderReportPage()}
       </main>
+
+      {pendingRemovalIds !== null && <FileRemovalDialog count={pendingRemovalIds.size}
+        onCancel={() => setPendingRemovalIds(null)} onConfirm={confirmRemoveDatasets} />}
 
       {auditOpen && selectedEntry && (
         <aside className="product-audit-drawer" aria-label="详情与审计">

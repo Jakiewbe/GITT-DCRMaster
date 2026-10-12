@@ -45,6 +45,9 @@ __pycache__/
 /FGS-GITT-*.csv
 /analysis/
 /outputs/
+/output/
+/.playwright-cli/
+*.pulselab
 /PROJECT_COMPLETION_REPORT.md
 /docs/CURRENT_CALCULATION_LOGIC_2026-09-15.md
 /docs/PROJECT_AUDIT_AND_LUNA_TASKS_2026-09-15.md

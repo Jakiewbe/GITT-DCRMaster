@@ -12,6 +12,8 @@ export type AnalysisCache = {
   peek: (key: string) => AnalysisOutcome | undefined;
   set: (key: string, value: AnalysisOutcome) => void;
   size: () => number;
+  retain: (keys: ReadonlySet<string>) => void;
+  clear: () => void;
 };
 
 export function createAnalysisCache(maximumEntries = 24): AnalysisCache {
@@ -42,6 +44,12 @@ export function createAnalysisCache(maximumEntries = 24): AnalysisCache {
     },
     size() {
       return entries.size;
+    },
+    retain(keys) {
+      for (const key of entries.keys()) if (!keys.has(key)) entries.delete(key);
+    },
+    clear() {
+      entries.clear();
     },
   };
 }

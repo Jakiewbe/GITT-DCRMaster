@@ -1,4 +1,4 @@
-import { BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
+import { BlobReader, BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 
 export type XlsxCellValue = string | number | boolean | null | undefined | string[];
 
@@ -60,37 +60,37 @@ function safeSheetName(value: string, fallback: string): string {
   return cleaned || fallback;
 }
 
-function worksheetXml(sheet: XlsxSheet): string {
+function worksheetBlob(sheet: XlsxSheet): Blob {
   const headers = sheet.columns;
-  const allRows: XlsxCellValue[][] = [
-    headers,
-    ...sheet.rows.map((row) => headers.map((column) => row[column])),
-  ];
   const widths = headers.map((header, columnIndex) => {
-    const maximum = allRows.reduce((current, row) => {
-      const value = normalizedCellValue(row[columnIndex]);
+    const maximum = sheet.rows.reduce((current, row) => {
+      const value = normalizedCellValue(row[headers[columnIndex]]);
       return Math.max(current, value === null ? 0 : String(value).length);
     }, header.length);
     return Math.min(42, Math.max(10, maximum + 2));
   });
-  const rowXml = allRows.map((row, rowIndex) => {
-    const cells = row.map((value, columnIndex) =>
-      cellXml(`${columnName(columnIndex)}${rowIndex + 1}`, value, rowIndex === 0 ? 1 : 0),
-    ).join('');
-    return `<row r="${rowIndex + 1}">${cells}</row>`;
-  }).join('');
   const columnXml = widths.map((width, index) =>
     `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`,
   ).join('');
-  const lastCell = `${columnName(Math.max(0, headers.length - 1))}${Math.max(1, allRows.length)}`;
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  const lastCell = `${columnName(Math.max(0, headers.length - 1))}${sheet.rows.length + 1}`;
+  const parts: BlobPart[] = [`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <dimension ref="A1:${lastCell}"/>
   <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
   <cols>${columnXml}</cols>
-  <sheetData>${rowXml}</sheetData>
+  <sheetData>`];
+  let pending = '';
+  for (let rowIndex = 0; rowIndex <= sheet.rows.length; rowIndex += 1) {
+    const cells = headers.map((header, columnIndex) => cellXml(`${columnName(columnIndex)}${rowIndex + 1}`,
+      rowIndex === 0 ? header : sheet.rows[rowIndex - 1][header], rowIndex === 0 ? 1 : 0)).join('');
+    pending += `<row r="${rowIndex + 1}">${cells}</row>`;
+    if (pending.length >= 1 << 20) { parts.push(pending); pending = ''; }
+  }
+  if (pending.length) parts.push(pending);
+  parts.push(`</sheetData>
   <autoFilter ref="A1:${lastCell}"/>
-</worksheet>`;
+</worksheet>`);
+  return new Blob(parts, { type: 'application/xml' });
 }
 
 function contentTypesXml(sheetCount: number): string {
@@ -166,7 +166,7 @@ export async function createXlsxWorkbook(sheets: XlsxSheet[]): Promise<Blob> {
   await writer.add('xl/_rels/workbook.xml.rels', new TextReader(workbookRelationshipsXml(sheets.length)));
   await writer.add('xl/styles.xml', new TextReader(STYLES));
   for (let index = 0; index < sheets.length; index += 1) {
-    await writer.add(`xl/worksheets/sheet${index + 1}.xml`, new TextReader(worksheetXml(sheets[index])));
+    await writer.add(`xl/worksheets/sheet${index + 1}.xml`, new BlobReader(worksheetBlob(sheets[index])));
   }
   return writer.close();
 }

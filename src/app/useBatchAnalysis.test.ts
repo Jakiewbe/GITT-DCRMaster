@@ -69,7 +69,7 @@ describe('recipe-gated batch analysis', () => {
     const request = buildBatchAnalysisRequests(
       [loaded('gitt')],
       settings,
-      createDefaultWorkbenchRecipe(),
+      { ...createDefaultWorkbenchRecipe(), electrodeDiameterMm: null },
     )[0];
 
     expect(request.recipePlan.readyToAnalyze).toBe(false);

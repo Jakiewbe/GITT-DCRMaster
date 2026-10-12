@@ -1,6 +1,6 @@
 [package]
 name = "gitt-dcr-scientific-workbench"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.3"
 description = "PulseLab offline, auditable GITT and DCR scientific workbench"
 authors = ["Jakiewbe"]
 edition = "2021"

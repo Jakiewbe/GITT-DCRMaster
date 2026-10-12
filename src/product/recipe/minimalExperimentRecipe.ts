@@ -372,7 +372,7 @@ function metadataMassIsCorroborated(
   const tolerance = massToleranceMg(metadataMassMg);
   return sources.some(
     (source) =>
-      source.sourceId !== NEWARE_METADATA_MASS_SOURCE_ID &&
+      source.sourceId === 'filename' &&
       Math.abs(source.massMg - metadataMassMg) <= tolerance,
   );
 }
@@ -445,6 +445,10 @@ function resolveActiveMass(
 
   const metadataMassMg = input?.metadataMassMg ?? null;
   if (!positiveFinite(metadataMassMg)) {
+    if (sources.length > 0 && !hasMassConflict(null, sources)) {
+      autoResolved.push({ id: 'active_mass_source_confirmed', label: '明确单位的文件质量', value: sources[0].label });
+      return { activeMassG: sources[0].massMg / 1000, sourceId: sources[0].sourceId };
+    }
     if (sources.length > 0) {
       questions.push(massChoiceQuestion(sources));
       blocking.push({
@@ -734,11 +738,20 @@ function materialSignals(text: string): CfxRecipeMaterialProfileIdV1[] {
   return signals;
 }
 
-function extractMassMg(text: string): number | null {
-  const match = /(?:^|[^0-9])([0-9]+(?:\.[0-9]+)?)\s*mg(?:$|[^a-z])/i.exec(text);
-  if (!match) return null;
-  const value = Number(match[1]);
-  return positiveFinite(value) ? value : null;
+export function extractMassMg(text: string): number | null {
+  const normalized = text.normalize('NFKC');
+  const values: number[] = [];
+  const pattern = /(?:^|[^\d.])((?:\d+(?:\.\d+)?|\.\d+))\s*(mg|µg|μg|ug|毫克|微克|g|克)(?=$|[^a-z])/gi;
+  for (const match of normalized.matchAll(pattern)) {
+    const value = Number(match[1]);
+    const unit = match[2].toLowerCase();
+    const mass = value * (unit === 'g' || unit === '克' ? 1000 : /^(?:[µμu]g|微克)$/.test(unit) ? 0.001 : 1);
+    if (positiveFinite(mass)) values.push(mass);
+  }
+  // Multiple different masses in one text are ambiguous; never take the first.
+  return values.length > 0 && values.every((value) => Math.abs(value - values[0]) <= 1e-9)
+    ? values[0]
+    : null;
 }
 
 /**
