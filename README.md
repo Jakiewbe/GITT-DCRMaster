@@ -5,7 +5,7 @@
   <p>面向电池材料研究的 GITT / DCR 本地分析工作台：从原始测试文件到可复核结果与作图数据。</p>
   <p><sub>Traceable analysis for electrochemical pulse data.</sub></p>
 
-  <a href="package.json"><img src="https://img.shields.io/badge/version-0.1.0--beta.3-43B5C5?style=flat-square" alt="当前版本 0.1.0 beta 3"></a>
+  <a href="package.json"><img src="https://img.shields.io/badge/version-0.1.0--beta.4-43B5C5?style=flat-square" alt="当前版本 0.1.0 beta 4"></a>
   <a href="src-tauri/tauri.conf.json"><img src="https://img.shields.io/badge/desktop-Tauri%202-43B5C5?style=flat-square" alt="桌面框架 Tauri 2"></a>
 
   <p>
@@ -133,7 +133,7 @@ GITT 共同电压范围不生成新测量值；未拟合的 √τ–电压数据
 
 - [CFₓ GITT 计算口径与适用范围](docs/science/CFX_GITT_10S.md)
 - [LAND CEX 文件解析说明](docs/science/LAND_CEX_BINARY_V1.md)
-- [0.1.0-beta.3 更新说明](docs/RELEASE_NOTES_0.1.0-beta.3.md)
+- [0.1.0-beta.4 更新说明](docs/RELEASE_NOTES_0.1.0-beta.4.md)
 - [第三方软件声明](THIRD_PARTY_NOTICES.md)
 
 ## 参考文献

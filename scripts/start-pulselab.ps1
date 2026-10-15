@@ -25,7 +25,7 @@ if ($null -eq $existingListener) {
     -FilePath $npmCommand.Source `
     -ArgumentList @('run', 'dev', '--', '--host', $hostAddress, '--port', $port) `
     -WorkingDirectory $projectDirectory `
-    -WindowStyle Normal | Out-Null
+    -WindowStyle Hidden | Out-Null
 }
 
 $ready = $false
@@ -43,7 +43,7 @@ for ($attempt = 0; $attempt -lt 60; $attempt += 1) {
 }
 
 if (-not $ready) {
-  Write-Error "PulseLab did not start within 60 seconds. Check the development server window."
+  Write-Error "PulseLab did not start within 60 seconds. Run npm run dev in the project directory for diagnostics."
   exit 1
 }
 

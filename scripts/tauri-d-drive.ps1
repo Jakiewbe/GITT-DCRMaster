@@ -209,6 +209,10 @@ try {
 
 if ($Action -eq 'build') {
     $profile = if ($DebugBuild) { 'debug' } else { 'release' }
+    if (-not $DebugBuild) {
+        & (Join-Path $PSScriptRoot 'verify-windows-gui.ps1') `
+            -ExecutablePath (Join-Path $cargoTarget 'release\gitt-dcr-scientific-workbench.exe')
+    }
     $bundleRoot = Join-Path $cargoTarget "$profile\bundle"
     if (Test-Path -LiteralPath $bundleRoot) {
         $package = Get-Content -LiteralPath (Join-Path $repoRoot 'package.json') -Raw | ConvertFrom-Json
